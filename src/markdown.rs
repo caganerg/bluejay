@@ -4,8 +4,11 @@
 //! code, links, rules, tables) plus `[[wiki links]]`, which are detected in the
 //! text stream so that links inside code spans and fences are left alone.
 
+use std::sync::LazyLock;
+
 use eframe::egui::{
-    self, Color32, Rect, RichText, Shape, Stroke, TextStyle, TextWrapMode, Ui, WidgetText, pos2,
+    self, Color32, FontFamily, Rect, RichText, Shape, Stroke, TextStyle, TextWrapMode, Ui,
+    WidgetText, pos2,
 };
 use pulldown_cmark::{Alignment, Event, Options, Parser, Tag, TagEnd};
 
@@ -27,6 +30,15 @@ const BODY_SIZE: f32 = 15.0;
 const CELL_GAP: f32 = 18.0;
 /// Vertical padding between the header text and the band drawn behind it.
 const HEAD_PAD: f32 = 3.0;
+
+// Every piece of text in the preview names its family, so nothing here falls
+// back to the style's default font. Cloning one is an `Arc` bump.
+static SANS: LazyLock<FontFamily> = LazyLock::new(|| FontFamily::Name(crate::PREVIEW_SANS.into()));
+static SANS_BOLD: LazyLock<FontFamily> =
+    LazyLock::new(|| FontFamily::Name(crate::PREVIEW_SANS_BOLD.into()));
+/// Code spans and fences: the editor's mono, so the two panes agree on what
+/// code looks like. It is a weight of an embedded family, not a third face.
+static MONO: LazyLock<FontFamily> = LazyLock::new(|| FontFamily::Name(crate::EDITOR_MONO.into()));
 
 #[derive(Clone, Copy, Default, PartialEq)]
 struct Style {
@@ -58,12 +70,13 @@ fn font_size(style: &Style) -> f32 {
 }
 
 fn rich(text: &str, style: &Style) -> RichText {
+    // Headings are the body face at a larger size and in the bold weight; only
+    // those two things separate h1 from h6 from a paragraph.
+    let bold = style.strong || style.heading.is_some();
     let mut t = RichText::new(text)
+        .family(if bold { SANS_BOLD.clone() } else { SANS.clone() })
         .size(font_size(style))
         .color(if style.quote { MUTED } else { TEXT });
-    if style.strong || style.heading.is_some() {
-        t = t.strong();
-    }
     if style.em {
         t = t.italics();
     }
@@ -75,14 +88,17 @@ fn rich(text: &str, style: &Style) -> RichText {
 
 fn code_rich(code: &str) -> RichText {
     RichText::new(code)
-        .monospace()
+        .family(MONO.clone())
         .size(BODY_SIZE - 1.0)
         .color(CODE_FG)
         .background_color(CODE_BG)
 }
 
 fn link_rich(text: &str) -> RichText {
-    RichText::new(text).size(BODY_SIZE).color(LINK)
+    RichText::new(text)
+        .family(SANS.clone())
+        .size(BODY_SIZE)
+        .color(LINK)
 }
 
 /// The parser extensions the renderer knows how to draw.
@@ -324,7 +340,12 @@ fn flush_block(
             ui.add_space(indent);
         }
         if let Some(prefix) = prefix {
-            ui.label(RichText::new(prefix).size(BODY_SIZE).color(MUTED));
+            ui.label(
+                RichText::new(prefix)
+                    .family(SANS.clone())
+                    .size(BODY_SIZE)
+                    .color(MUTED),
+            );
         }
         draw_inlines(ui, inlines, true, action);
     });
@@ -498,7 +519,7 @@ fn code_block_ui(ui: &mut Ui, code: &str, indent: f32) {
                 ui.set_width(ui.available_width());
                 ui.label(
                     RichText::new(code)
-                        .monospace()
+                        .family(MONO.clone())
                         .size(BODY_SIZE - 1.0)
                         .color(CODE_FG),
                 );
@@ -510,6 +531,19 @@ fn code_block_ui(ui: &mut Ui, code: &str, indent: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Run a UI pass against the real fonts.
+    ///
+    /// `egui::__run_test_ui` starts from `FontDefinitions::empty()`, which binds
+    /// only the two built-in families; laying out text in a `FontFamily::Name`
+    /// that nothing is bound to panics, so the test context installs the same
+    /// families the app does.
+    fn run_test_ui(add_contents: impl FnMut(&mut Ui)) {
+        let ctx = egui::Context::default();
+        crate::install_fonts(&ctx);
+        ctx.run_ui(Default::default(), add_contents)
+            .drop_without_applying_deltas();
+    }
 
     fn split(source: &str) -> Vec<String> {
         let mut inlines = Vec::new();
@@ -562,7 +596,7 @@ fn main() { let x = \"[[not a link]]\"; }
 
 | not | a table |
 ";
-        eframe::egui::__run_test_ui(|ui| {
+        run_test_ui(|ui| {
             render(ui, source);
         });
     }
@@ -591,7 +625,7 @@ fn main() { let x = \"[[not a link]]\"; }
         assert_eq!(aligns, [Alignment::Left, Alignment::Center, Alignment::Right]);
         assert_eq!((heads, rows, cells), (1, 2, 9));
 
-        eframe::egui::__run_test_ui(|ui| {
+        run_test_ui(|ui| {
             render(ui, source);
         });
     }

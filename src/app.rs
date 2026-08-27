@@ -13,6 +13,10 @@ use crate::vault::{self, Node};
 /// How long editing has to pause before the note is written to disk.
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(600);
 
+/// Point size of the raw markdown in the editor pane. JetBrains Mono runs a
+/// little large for its nominal size, so this sits just under the preview's 15.
+const EDITOR_SIZE: f32 = 14.0;
+
 /// Something the sidebar wants done, collected while the tree is borrowed and
 /// applied once the panel closure is over.
 enum Cmd {
@@ -362,6 +366,7 @@ impl App {
                 let rel = path.strip_prefix(&self.root).unwrap_or(&path);
                 ui.label(
                     egui::RichText::new(rel.to_string_lossy())
+                        .family(egui::FontFamily::Name(crate::PREVIEW_SANS_BOLD.into()))
                         .strong()
                         .size(14.0),
                 );
@@ -377,7 +382,10 @@ impl App {
                 .show(ui, |ui| {
                     let response = ui.add(
                         egui::TextEdit::multiline(&mut self.buffer)
-                            .font(egui::TextStyle::Monospace)
+                            .font(egui::FontId::new(
+                                EDITOR_SIZE,
+                                egui::FontFamily::Name(crate::EDITOR_MONO.into()),
+                            ))
                             .desired_width(f32::INFINITY)
                             .desired_rows(40)
                             .lock_focus(true)
