@@ -319,12 +319,20 @@ impl App {
             .default_size(420.0)
             .size_range(220.0..=1200.0)
             .show(ui, |ui| {
-                egui::ScrollArea::vertical()
+                // The pane keeps the width the user dragged it to. A note too
+                // wide to fit — a big table — scrolls sideways instead of
+                // pushing the panel out, which egui would otherwise store as
+                // the panel's new width and never give back.
+                let width = ui.available_width();
+                egui::ScrollArea::both()
                     .id_salt("preview")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.add_space(6.0);
-                        ui.set_width(ui.available_width());
+                        // Prose still wraps at the pane edge; only content that
+                        // cannot wrap is allowed past it.
+                        ui.set_min_width(width);
+                        ui.set_max_width(width);
                         if self.open_path.is_none() {
                             ui.label("Nothing open.");
                         } else {
