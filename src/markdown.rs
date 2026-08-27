@@ -1,11 +1,13 @@
 //! A small pulldown-cmark -> egui renderer.
 //!
 //! It covers the everyday markdown subset (headings, emphasis, lists, quotes,
-//! code, links, rules) plus `[[wiki links]]`, which are detected in the text
-//! stream so that links inside code spans and fences are left alone.
+//! code, links, rules, tables) plus `[[wiki links]]`, which are detected in the
+//! text stream so that links inside code spans and fences are left alone.
 
-use eframe::egui::{self, Color32, RichText, Ui};
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use eframe::egui::{
+    self, Color32, Rect, RichText, Shape, Stroke, TextStyle, TextWrapMode, Ui, WidgetText, pos2,
+};
+use pulldown_cmark::{Alignment, Event, Options, Parser, Tag, TagEnd};
 
 /// Something the reader clicked in the preview.
 pub enum Action {
@@ -18,7 +20,13 @@ const MUTED: Color32 = Color32::from_rgb(0x9a, 0x9d, 0xa2);
 const LINK: Color32 = Color32::from_rgb(0x7f, 0xa8, 0xf5);
 const CODE_FG: Color32 = Color32::from_rgb(0xe6, 0x9a, 0x9a);
 const CODE_BG: Color32 = Color32::from_rgb(0x25, 0x27, 0x2b);
+const HEAD_BG: Color32 = Color32::from_rgb(0x2b, 0x2e, 0x33);
+const RULE: Color32 = Color32::from_rgb(0x44, 0x47, 0x4d);
 const BODY_SIZE: f32 = 15.0;
+/// Horizontal gap between two table columns.
+const CELL_GAP: f32 = 18.0;
+/// Vertical padding between the header text and the band drawn behind it.
+const HEAD_PAD: f32 = 3.0;
 
 #[derive(Clone, Copy, Default, PartialEq)]
 struct Style {
@@ -37,8 +45,8 @@ enum Inline {
     Break,
 }
 
-fn rich(text: &str, style: &Style) -> RichText {
-    let size = match style.heading {
+fn font_size(style: &Style) -> f32 {
+    match style.heading {
         Some(1) => 27.0,
         Some(2) => 22.0,
         Some(3) => 19.0,
@@ -46,9 +54,12 @@ fn rich(text: &str, style: &Style) -> RichText {
         Some(5) => 15.5,
         Some(6) => 14.5,
         _ => BODY_SIZE,
-    };
+    }
+}
+
+fn rich(text: &str, style: &Style) -> RichText {
     let mut t = RichText::new(text)
-        .size(size)
+        .size(font_size(style))
         .color(if style.quote { MUTED } else { TEXT });
     if style.strong || style.heading.is_some() {
         t = t.strong();
@@ -62,12 +73,29 @@ fn rich(text: &str, style: &Style) -> RichText {
     t
 }
 
-/// Render `source` into `ui`, returning a click on a wiki link if there was one.
-pub fn render(ui: &mut Ui, source: &str) -> Option<Action> {
+fn code_rich(code: &str) -> RichText {
+    RichText::new(code)
+        .monospace()
+        .size(BODY_SIZE - 1.0)
+        .color(CODE_FG)
+        .background_color(CODE_BG)
+}
+
+fn link_rich(text: &str) -> RichText {
+    RichText::new(text).size(BODY_SIZE).color(LINK)
+}
+
+/// The parser extensions the renderer knows how to draw.
+fn options() -> Options {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TASKLISTS);
+    options.insert(Options::ENABLE_TABLES);
+    options
+}
 
+/// Render `source` into `ui`, returning a click on a wiki link if there was one.
+pub fn render(ui: &mut Ui, source: &str) -> Option<Action> {
     let mut action = None;
     let mut inlines: Vec<Inline> = Vec::new();
     let mut style = Style::default();
@@ -82,6 +110,7 @@ pub fn render(ui: &mut Ui, source: &str) -> Option<Action> {
     let mut quote_depth = 0usize;
     let mut link: Option<(String, String)> = None; // (url, accumulated text)
     let mut code_block: Option<String> = None;
+    let mut table: Option<Table> = None;
 
     macro_rules! flush_text {
         () => {
@@ -92,7 +121,7 @@ pub fn render(ui: &mut Ui, source: &str) -> Option<Action> {
         };
     }
 
-    for event in Parser::new_ext(source, options) {
+    for event in Parser::new_ext(source, options()) {
         // Text is the only event we buffer; everything else ends a run.
         if !matches!(event, Event::Text(_)) {
             flush_text!();
@@ -123,6 +152,7 @@ pub fn render(ui: &mut Ui, source: &str) -> Option<Action> {
                 Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. } => {
                     link = Some((dest_url.to_string(), String::new()));
                 }
+                Tag::Table(aligns) => table = Some(Table { aligns, ..Table::default() }),
                 _ => {}
             },
 
@@ -165,6 +195,34 @@ pub fn render(ui: &mut Ui, source: &str) -> Option<Action> {
                     if let Some((url, text)) = link.take() {
                         let text = if text.is_empty() { url.clone() } else { text };
                         inlines.push(Inline::Link { text, url });
+                    }
+                }
+                TagEnd::TableCell => {
+                    if let Some(table) = table.as_mut() {
+                        table.row.push(std::mem::take(&mut inlines));
+                    }
+                }
+                TagEnd::TableHead => {
+                    if let Some(table) = table.as_mut() {
+                        table.head = std::mem::take(&mut table.row);
+                        // Markdown gives header cells no emphasis of their own.
+                        for inline in table.head.iter_mut().flatten() {
+                            if let Inline::Text(_, style) = inline {
+                                style.strong = true;
+                            }
+                        }
+                    }
+                }
+                TagEnd::TableRow => {
+                    if let Some(table) = table.as_mut() {
+                        let row = std::mem::take(&mut table.row);
+                        table.body.push(row);
+                    }
+                }
+                TagEnd::Table => {
+                    if let Some(table) = table.take() {
+                        table_ui(ui, &table, indent(&list_stack, quote_depth), &mut action);
+                        ui.add_space(4.0);
                     }
                 }
                 _ => {}
@@ -268,39 +326,164 @@ fn flush_block(
         if let Some(prefix) = prefix {
             ui.label(RichText::new(prefix).size(BODY_SIZE).color(MUTED));
         }
-        for inline in inlines.iter() {
-            match inline {
-                // One label per word so the row wraps at word boundaries.
-                Inline::Text(text, style) => {
+        draw_inlines(ui, inlines, true, action);
+    });
+    inlines.clear();
+}
+
+/// Draw a run of inline content into the row the caller has already opened.
+///
+/// `split_words` gives every word its own label so a wrapping layout can break
+/// between them. Table cells don't wrap and are measured as whole strings, so
+/// they pass `false` to keep the drawn width equal to the measured one.
+fn draw_inlines(ui: &mut Ui, inlines: &[Inline], split_words: bool, action: &mut Option<Action>) {
+    for inline in inlines {
+        match inline {
+            Inline::Text(text, style) => {
+                if split_words {
                     for word in text.split_inclusive(' ') {
                         ui.label(rich(word, style));
                     }
+                } else {
+                    ui.label(rich(text, style));
                 }
-                Inline::Code(code) => {
-                    ui.label(
-                        RichText::new(code)
-                            .monospace()
-                            .size(BODY_SIZE - 1.0)
-                            .color(CODE_FG)
-                            .background_color(CODE_BG),
-                    );
-                }
-                Inline::Link { text, url } => {
-                    ui.hyperlink_to(RichText::new(text).size(BODY_SIZE).color(LINK), url);
-                }
-                Inline::Wiki(name) => {
-                    let label = RichText::new(format!("[[{name}]]"))
-                        .size(BODY_SIZE)
-                        .color(LINK);
-                    if ui.link(label).clicked() {
-                        *action = Some(Action::OpenNote(name.clone()));
-                    }
-                }
-                Inline::Break => ui.end_row(),
             }
+            Inline::Code(code) => {
+                ui.label(code_rich(code));
+            }
+            Inline::Link { text, url } => {
+                ui.hyperlink_to(link_rich(text), url);
+            }
+            Inline::Wiki(name) => {
+                if ui.link(link_rich(&format!("[[{name}]]"))).clicked() {
+                    *action = Some(Action::OpenNote(name.clone()));
+                }
+            }
+            Inline::Break => ui.end_row(),
         }
-    });
-    inlines.clear();
+    }
+}
+
+/// A table buffered while it is parsed.
+///
+/// It cannot be drawn as it streams in: a column is only as wide as its widest
+/// cell, and that isn't known until the last row has been read.
+#[derive(Default)]
+struct Table {
+    aligns: Vec<Alignment>,
+    head: Vec<Vec<Inline>>,
+    body: Vec<Vec<Vec<Inline>>>,
+    /// Cells of the row currently being parsed.
+    row: Vec<Vec<Inline>>,
+}
+
+/// Width one inline will take up, asking for the same galley the label will use.
+fn inline_width(ui: &Ui, inline: &Inline) -> f32 {
+    let text: WidgetText = match inline {
+        Inline::Text(text, style) => rich(text, style).into(),
+        Inline::Code(code) => code_rich(code).into(),
+        Inline::Link { text, .. } => link_rich(text).into(),
+        Inline::Wiki(name) => link_rich(&format!("[[{name}]]")).into(),
+        Inline::Break => return 0.0,
+    };
+    text.into_galley(ui, Some(TextWrapMode::Extend), f32::INFINITY, TextStyle::Body)
+        .size()
+        .x
+}
+
+/// Cells are drawn with zero item spacing, so their width is just the sum.
+fn cell_width(ui: &Ui, cell: &[Inline]) -> f32 {
+    cell.iter().map(|inline| inline_width(ui, inline)).sum()
+}
+
+/// Draw a table on a grid measured up front.
+///
+/// egui's `Grid` only learns its column widths from the previous frame, which
+/// would put the alignment padding in the wrong place on the frame a note is
+/// opened, so the cells are measured here and padded by hand instead.
+fn table_ui(ui: &mut Ui, table: &Table, indent: f32, action: &mut Option<Action>) {
+    let cols = table
+        .aligns
+        .len()
+        .max(table.head.len())
+        .max(table.body.iter().map(Vec::len).max().unwrap_or(0));
+    if cols == 0 {
+        return;
+    }
+
+    let measured = |row: &[Vec<Inline>]| -> Vec<f32> {
+        (0..cols)
+            .map(|col| row.get(col).map_or(0.0, |cell| cell_width(ui, cell)))
+            .collect()
+    };
+    let head_widths = measured(&table.head);
+    let body_widths: Vec<Vec<f32>> = table.body.iter().map(|row| measured(row)).collect();
+
+    let mut widths = vec![0.0f32; cols];
+    for row in std::iter::once(&head_widths).chain(&body_widths) {
+        for (col, width) in row.iter().enumerate() {
+            widths[col] = widths[col].max(*width);
+        }
+    }
+    let total = widths.iter().sum::<f32>() + CELL_GAP * (cols - 1) as f32;
+
+    // Reserved now and filled in once the header row's height is known, so the
+    // band ends up behind the text rather than on top of it.
+    let band = ui.painter().add(Shape::Noop);
+    let left = ui.cursor().left() + indent;
+
+    ui.add_space(HEAD_PAD);
+    let head_rect = table_row(ui, &table.head, &head_widths, &widths, &table.aligns, indent, action);
+    ui.add_space(HEAD_PAD);
+
+    let band_rect = Rect::from_min_max(
+        pos2(left - 4.0, head_rect.top() - HEAD_PAD),
+        pos2(left + total + 4.0, head_rect.bottom() + HEAD_PAD),
+    );
+    ui.painter()
+        .set(band, Shape::rect_filled(band_rect, 2.0, HEAD_BG));
+    ui.painter()
+        .hline(band_rect.x_range(), band_rect.bottom(), Stroke::new(1.0, RULE));
+
+    for (row, row_widths) in table.body.iter().zip(&body_widths) {
+        table_row(ui, row, row_widths, &widths, &table.aligns, indent, action);
+    }
+}
+
+/// One row, each cell padded from its own width out to its column's width.
+fn table_row(
+    ui: &mut Ui,
+    cells: &[Vec<Inline>],
+    cell_widths: &[f32],
+    widths: &[f32],
+    aligns: &[Alignment],
+    indent: f32,
+    action: &mut Option<Action>,
+) -> Rect {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        if indent > 0.0 {
+            ui.add_space(indent);
+        }
+        for (col, width) in widths.iter().enumerate() {
+            if col > 0 {
+                ui.add_space(CELL_GAP);
+            }
+            let slack = (width - cell_widths.get(col).copied().unwrap_or(0.0)).max(0.0);
+            let (before, after) = match aligns.get(col) {
+                Some(Alignment::Center) => (slack / 2.0, slack / 2.0),
+                Some(Alignment::Right) => (slack, 0.0),
+                _ => (0.0, slack),
+            };
+            ui.add_space(before);
+            if let Some(cell) = cells.get(col) {
+                draw_inlines(ui, cell, false, action);
+            }
+            ui.add_space(after);
+        }
+    })
+    .response
+    .rect
 }
 
 fn code_block_ui(ui: &mut Ui, code: &str, indent: f32) {
@@ -379,6 +562,35 @@ fn main() { let x = \"[[not a link]]\"; }
 
 | not | a table |
 ";
+        eframe::egui::__run_test_ui(|ui| {
+            render(ui, source);
+        });
+    }
+
+    /// Tables are the one block that is buffered whole, so they get a parse
+    /// check on top of the layout pass.
+    #[test]
+    fn renders_a_table() {
+        let source = "\
+| Name | Count | Note |
+|:-----|:-----:|-----:|
+| alpha | 1 | see [[Other]] |
+| beta | 22 | `code` |
+";
+        let mut aligns = Vec::new();
+        let (mut heads, mut rows, mut cells) = (0, 0, 0);
+        for event in Parser::new_ext(source, options()) {
+            match event {
+                Event::Start(Tag::Table(a)) => aligns = a,
+                Event::Start(Tag::TableHead) => heads += 1,
+                Event::Start(Tag::TableRow) => rows += 1,
+                Event::Start(Tag::TableCell) => cells += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(aligns, [Alignment::Left, Alignment::Center, Alignment::Right]);
+        assert_eq!((heads, rows, cells), (1, 2, 9));
+
         eframe::egui::__run_test_ui(|ui| {
             render(ui, source);
         });
