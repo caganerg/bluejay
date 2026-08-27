@@ -22,6 +22,7 @@ const EDITOR_SIZE: f32 = 14.0;
 enum Cmd {
     Open(PathBuf),
     Reload,
+    ChangeRoot,
     NewNote(PathBuf),
     NewFolder(PathBuf),
     Rename(PathBuf),
@@ -133,10 +134,34 @@ impl App {
         }
     }
 
+    /// Point the window at a different vault and remember it for next launch.
+    fn set_root(&mut self, root: PathBuf) {
+        if root == self.root {
+            return;
+        }
+        self.save_now();
+        vault::save_root(&root);
+        // Nothing survives the move: the open note, its buffer and the name
+        // index all belong to the vault being left behind.
+        *self = Self::new(root);
+        self.status = format!("Vault: {}", self.root.display());
+    }
+
     fn apply(&mut self, cmd: Cmd) {
         match cmd {
             Cmd::Open(path) => self.open(path),
             Cmd::Reload => self.refresh(),
+            Cmd::ChangeRoot => {
+                // The dialog blocks the frame it is opened from, same as the
+                // one on the first-run screen. There is nothing to draw
+                // underneath it in the meantime.
+                if let Some(root) = rfd::FileDialog::new()
+                    .set_directory(&self.root)
+                    .pick_folder()
+                {
+                    self.set_root(root);
+                }
+            }
             Cmd::NewNote(parent) => {
                 self.modal = Some(Modal {
                     kind: ModalKind::NewNote,
@@ -287,6 +312,18 @@ impl App {
             .default_size(230.0)
             .size_range(150.0..=420.0)
             .show(ui, |ui| {
+                ui.add_space(6.0);
+                // Names the vault that is open and swaps it. The full path goes
+                // in the tooltip, being far too long for the narrowest sidebar.
+                let vault = ui
+                    .add(egui::Button::new(format!("🗀  {}", tree.name)).truncate())
+                    .on_hover_text(format!(
+                        "{}\n\nClick to open a different folder.",
+                        root.display()
+                    ));
+                if vault.clicked() {
+                    cmds.push(Cmd::ChangeRoot);
+                }
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui.button("New note").clicked() {
