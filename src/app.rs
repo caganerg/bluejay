@@ -830,6 +830,14 @@ fn name_of(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// Height of one note row, worked out the way `selectable_label` works its own
+/// out, so a row that is skipped reserves exactly what drawing it would have
+/// taken. `note_rows_are_the_height_we_reserve` holds the two together.
+fn row_height(ui: &Ui) -> f32 {
+    let text = ui.text_style_height(&egui::TextStyle::Body);
+    (text + ui.spacing().button_padding.y * 2.0).max(ui.spacing().interact_size.y)
+}
+
 fn tree_ui(
     ui: &mut Ui,
     node: &Node,
@@ -837,7 +845,27 @@ fn tree_ui(
     can_paste: bool,
     cmds: &mut Vec<Cmd>,
 ) {
+    // Rows outside the scrolled viewport are skipped rather than built. Every
+    // note row is the same height, so their space can be reserved without
+    // laying anything out — and in a vault whose folder holds thousands of
+    // notes, all but the ~30 on screen are outside it. Folders are left alone:
+    // there are few of them, and how tall an open one is cannot be known
+    // without walking what is inside it.
+    let row = row_height(ui);
+    let visible = ui.clip_rect();
+
     for child in &node.children {
+        if !child.is_dir {
+            let top = ui.cursor().top();
+            if top + row < visible.top() || top > visible.bottom() {
+                // `allocate_space`, not `add_space`: only the former puts the
+                // item spacing between rows that a drawn row would have, and
+                // without it the reserved column comes up short of the real
+                // one by a few pixels per row.
+                ui.allocate_space(egui::vec2(ui.available_width(), row));
+                continue;
+            }
+        }
         if child.is_dir {
             let header = egui::CollapsingHeader::new(format!("🗀  {}", child.name))
                 .id_salt(&child.path)
@@ -1115,6 +1143,89 @@ mod tests {
         app.confirm_modal(&modal);
 
         assert!(app.status.contains("already exists"), "status: {}", app.status);
+    }
+
+    fn test_ctx() -> egui::Context {
+        let ctx = egui::Context::default();
+        crate::install_fonts(&ctx);
+        ctx
+    }
+
+    fn raw_input(w: f32, h: f32) -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(w, h),
+            )),
+            ..Default::default()
+        }
+    }
+
+    /// Skipping a row reserves `row_height`, so that number has to be what
+    /// drawing the row would actually have taken. If egui ever works a
+    /// selectable label's height out differently, the reserved space drifts
+    /// from the drawn space and the sidebar's scrolling goes wrong.
+    #[test]
+    fn note_rows_are_the_height_we_reserve() {
+        let ctx = test_ctx();
+        let mut drawn = 0.0;
+        let mut reserved = 0.0;
+        ctx.run_ui(raw_input(400.0, 600.0), |ui| {
+            reserved = row_height(ui);
+            drawn = ui.selectable_label(false, "an ordinary note").rect.height();
+        })
+        .drop_without_applying_deltas();
+
+        assert!(drawn > 0.0);
+        assert!(
+            (drawn - reserved).abs() < 0.01,
+            "drawn {drawn} vs reserved {reserved}"
+        );
+    }
+
+    /// Culling must not change how tall the tree is, or the scrollbar would
+    /// claim the vault has fewer notes than it does.
+    #[test]
+    fn skipped_rows_still_take_up_their_space() {
+        let dir = TempDir::new("cull");
+        let notes = 300;
+        for n in 0..notes {
+            fs::write(dir.0.join(format!("note {n:04}.md")), "").unwrap();
+        }
+        let tree = vault::scan(&dir.0);
+        assert_eq!(tree.children.len(), notes);
+
+        let ctx = test_ctx();
+        let mut tall = 0.0;
+        let mut short = 0.0;
+        let mut row = 0.0;
+
+        // A viewport tall enough for everything: nothing is skipped.
+        ctx.run_ui(raw_input(400.0, 40_000.0), |ui| {
+            row = row_height(ui);
+            let mut cmds = Vec::new();
+            tree_ui(ui, &tree, None, false, &mut cmds);
+            tall = ui.min_rect().height();
+        })
+        .drop_without_applying_deltas();
+
+        // A short one inside a scroll area: almost every row is skipped.
+        ctx.run_ui(raw_input(400.0, 300.0), |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let mut cmds = Vec::new();
+                    tree_ui(ui, &tree, None, false, &mut cmds);
+                    short = ui.min_rect().height();
+                });
+        })
+        .drop_without_applying_deltas();
+
+        assert!(tall > row * notes as f32, "sanity: {tall} for {notes} rows");
+        assert!(
+            (tall - short).abs() < 1.0,
+            "skipped rows must reserve what drawn rows take: {tall} vs {short}"
+        );
     }
 
     /// Our own writes move the timestamp too, and must not look like someone
