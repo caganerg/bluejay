@@ -94,11 +94,28 @@ fn code_rich(code: &str) -> RichText {
         .background_color(CODE_BG)
 }
 
+/// A `[[wiki link]]`, the one thing in the preview that is still clickable —
+/// it opens another note in this window and never leaves the app.
 fn link_rich(text: &str) -> RichText {
     RichText::new(text)
         .family(SANS.clone())
         .size(BODY_SIZE)
         .color(LINK)
+}
+
+/// A `[text](url)` link, which the preview shows but never follows.
+///
+/// Muted rather than blue, because nothing happens when it is clicked: opening
+/// one meant handing its URL to the system, which starts whatever application
+/// registered the scheme, and a note is a file like any other — synced in,
+/// cloned, downloaded. The destination is on hover, and the raw markdown is in
+/// the editor pane beside it. Same family and size as `link_rich`, so a table
+/// cell measures the same either way.
+fn flat_link_rich(text: &str) -> RichText {
+    RichText::new(text)
+        .family(SANS.clone())
+        .size(BODY_SIZE)
+        .color(MUTED)
 }
 
 /// The parser extensions the renderer knows how to draw.
@@ -373,7 +390,9 @@ fn draw_inlines(ui: &mut Ui, inlines: &[Inline], split_words: bool, action: &mut
                 ui.label(code_rich(code));
             }
             Inline::Link { text, url } => {
-                ui.hyperlink_to(link_rich(text), url);
+                // The link text is written by the same hand as the destination,
+                // so it is the one thing that cannot be trusted to describe it.
+                ui.label(flat_link_rich(text)).on_hover_text(url);
             }
             Inline::Wiki(name) => {
                 if ui.link(link_rich(&format!("[[{name}]]"))).clicked() {
@@ -403,7 +422,7 @@ fn inline_width(ui: &Ui, inline: &Inline) -> f32 {
     let text: WidgetText = match inline {
         Inline::Text(text, style) => rich(text, style).into(),
         Inline::Code(code) => code_rich(code).into(),
-        Inline::Link { text, .. } => link_rich(text).into(),
+        Inline::Link { text, .. } => flat_link_rich(text).into(),
         Inline::Wiki(name) => link_rich(&format!("[[{name}]]")).into(),
         Inline::Break => return 0.0,
     };

@@ -8,9 +8,13 @@ dirs = "6.0.0"
 # Wayland only: eframe's defaults enable both x11 and wayland (and pull in
 # winit/default, which enables x11 again), so defaults are off and the wanted
 # features are listed explicitly.
+# "links" is deliberately absent. It is what wires egui's open-url command to
+# `webbrowser`, which on Linux hands the URL to `xdg-open` and so starts
+# whatever application registered its scheme. Nothing in the preview opens a URL
+# any more, and leaving the feature off means the code that could is not
+# compiled in at all — it also drops `webbrowser` and `url` from the tree.
 eframe = { version = "0.36.1", default-features = false, features = [
     "default_fonts",
-    "links",
     "wayland",
     "wgpu",
 ] }

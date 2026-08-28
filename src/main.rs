@@ -137,6 +137,9 @@ fn set_dark_theme(ctx: &egui::Context) {
     visuals.panel_fill = egui::Color32::from_rgb(0x1e, 0x1f, 0x22);
     visuals.extreme_bg_color = egui::Color32::from_rgb(0x1a, 0x1b, 0x1e);
     visuals.window_fill = egui::Color32::from_rgb(0x24, 0x26, 0x2a);
+    // Despite the name this no longer dresses anything that leaves the app: the
+    // only widget left using it is the `ui.link` a `[[wiki link]]` is drawn
+    // with, which takes its underline from here.
     visuals.hyperlink_color = egui::Color32::from_rgb(0x7f, 0xa8, 0xf5);
     ctx.set_visuals(visuals);
 

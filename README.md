@@ -59,18 +59,41 @@ icon.
 ## What it does
 
 - **Tree** — mirrors the folder structure on disk, showing directories and
-  `.md` files (hidden files are skipped). Click a folder to expand it, a note to
-  open it. The toolbar creates notes and folders at the vault root; right-click
-  any entry for *New note here*, *New folder here*, *Copy*, *Cut*, *Rename* and
-  *Delete*. Deleting always asks first, and deleting a folder removes its
-  contents. *Paste* shows up on folders (and on the vault button at the top)
-  once something has been copied or cut; a name already taken at the
-  destination gains a “ (2)” rather than being overwritten.
+  `.md` files (hidden files and symlinks are skipped). Click a folder to expand
+  it, a note to open it. The toolbar creates notes and folders at the vault
+  root; right-click any entry for *New note here*, *New folder here*, *Copy*,
+  *Cut*, *Rename* and *Delete*. Deleting always asks first, and deleting a
+  folder removes its contents. *Paste* shows up on folders (and on the vault
+  button at the top) once something has been copied or cut; a name already
+  taken at the destination gains a “ (2)” rather than being overwritten.
 - **Editor** — the raw markdown, monospace and plain. No syntax highlighting.
 - **Preview** — re-rendered from the editor buffer every frame, so it tracks
   typing immediately. Headings, bold/italic/strikethrough, inline code, fenced
   code blocks, ordered and unordered (and nested) lists, task lists, block
-  quotes, horizontal rules and links. External links open in your browser.
+  quotes, horizontal rules and links. A `[text](url)` link is shown in grey with
+  its destination on hover, but nothing opens when you click it — see below.
+
+## What a note is not allowed to do
+
+A note is a file like any other — synced in, cloned, downloaded — so the preview
+does not assume the person reading one wrote it.
+
+- **Nothing opens a URL.** Opening one meant handing it to the system, which on
+  Linux means `xdg-open` starting whichever application had registered the
+  scheme — `file:`, `smb:`, or anything a desktop entry claimed. A markdown link
+  is drawn in grey with its destination on hover, and the raw `[text](url)` is
+  in the editor pane beside it. eframe's `links` feature is off, so the code
+  that could open one is not compiled in; `[[wiki links]]`, which only ever move
+  between notes in this window, are unaffected.
+- **Symlinks are skipped**, both by the tree and by copy/paste. A link pointing
+  back at a parent folder would otherwise make the scan revisit the same
+  directories until it ran out of time, and copying one that points outside the
+  vault would pull a real copy of its target in.
+- **Following a `[[wiki link]]` never overwrites.** If a note by that name is
+  already on disk it is opened, even when it is missing from the name index
+  because it arrived after the last refresh.
+- **Names cannot start with a dot** or contain control characters, since the
+  tree would not be able to show what they created.
 
 ## Wiki links
 
@@ -93,6 +116,18 @@ written to disk 600 ms after you stop typing, and also when you switch notes,
 rename, or close the window. `Ctrl+S` forces a write immediately if you want the
 reassurance. A `•` next to the filename means there are unwritten edits; the
 status bar at the bottom reports saves and any filesystem errors.
+
+Each save goes to a temporary file beside the note and is renamed over it, so a
+crash or a full disk leaves the previous note intact rather than a half-written
+one. Writing on a timer makes that worth doing: the window between truncating a
+file and finishing it reopens every time you pause, not just when you reach for
+Ctrl+S.
+
+Because the note is written on a timer, bluejay also checks that it is still the
+file it read. If the note changed on disk while you had unsaved edits — a sync,
+a `git pull`, an edit in another program — the save stops and asks which copy to
+keep instead of quietly winning. The **⟳** button reloads the open note along
+with the tree, and asks the same question first if there is anything unsaved.
 
 ## Layout of the code
 
@@ -120,6 +155,11 @@ obvious than they look:
   (loading libwayland at runtime instead of link time) with it. Cargo unions
   features across the graph, so naming winit directly restores those two without
   bringing `x11` back.
+- **`links` is off, and that is what removes URL opening.** It is the feature
+  that wires egui's open-url command to `webbrowser`, which hands the URL to
+  `xdg-open` on Linux. Nothing in the preview opens one any more, so the feature
+  is left off rather than merely unused, and `webbrowser` and `url` — 27 crates
+  with the latter's Unicode tables — leave the tree with it.
 - **`accesskit` is off, and that is what actually removes X11.**
   `accesskit_winit`'s own default feature hard-enables `winit/x11`, and
   `egui-winit` depends on it without `default-features = false`, so enabling
