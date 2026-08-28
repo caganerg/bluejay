@@ -1,5 +1,3 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
 mod app;
 mod markdown;
 mod vault;
@@ -204,12 +202,6 @@ impl eframe::App for Bluejay {
         if let Some(root) = chosen {
             vault::save_root(&root);
             *self = Bluejay::Ready(Box::new(app::App::new(root)));
-        }
-    }
-
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        if let Bluejay::Ready(app) = self {
-            app.save(storage);
         }
     }
 }

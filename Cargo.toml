@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-dirs = "6.0.0"
 # Wayland only: eframe's defaults enable both x11 and wayland (and pull in
 # winit/default, which enables x11 again), so defaults are off and the wanted
 # features are listed explicitly.

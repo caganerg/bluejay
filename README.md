@@ -4,6 +4,12 @@ A small native desktop markdown note app in Rust: a file tree, a plain text
 editor, and a live preview, side by side. No Electron, no webview, no
 JavaScript — just `eframe`/`egui` drawing directly.
 
+It works entirely offline. Notes are plain `.md` files in a folder you pick, and
+nothing here reaches for the network: there is no account, no sync, no update
+check and no telemetry, and no HTTP or TLS crate anywhere in the dependency
+tree. Nothing a note contains is fetched either — a `[text](url)` link is drawn
+but never opened, and an image is drawn as its link rather than downloaded.
+
 ```
 ┌────────────┬──────────────────────┬──────────────────────┐
 │ note tree  │ raw markdown (edit)  │ rendered preview     │
@@ -140,8 +146,11 @@ with the tree, and asks the same question first if there is anything unsaved.
 | `src/vault.rs` | directory scan, note-name index, config file |
 | `assets/` | the two typefaces, the logo, and the desktop entry |
 
-Five dependencies: `eframe`, `pulldown-cmark`, `rfd`, `dirs`, and a direct
-`winit` pin that exists only to select Wayland features — see below.
+Four dependencies: `eframe`, `pulldown-cmark`, `rfd`, and a direct `winit` pin
+that exists only to select Wayland features — see below. The config file's
+location is the base directory specification's one rule — `$XDG_CONFIG_HOME`,
+or `~/.config` when it is unset — which `std` already answers, so `dirs` and the
+two crates behind it are not carried for it.
 
 ## Windowing backend
 
@@ -172,5 +181,13 @@ obvious than they look:
 They come from `arboard`, which depends on `x11rb` unconditionally on Unix for
 its X11 clipboard backend, and eframe hardcodes egui-winit's `clipboard` feature
 instead of exposing it — so they cannot be removed by any feature flag without
-patching eframe and giving up copy/paste. They are inert here: nothing calls
-into that backend under Wayland, where `smithay-clipboard` is used instead.
+patching eframe and giving up copy/paste. They are inert here: `egui-winit` asks
+`smithay-clipboard` first and only falls through to `arboard` if that fails, so
+under Wayland the X11 backend is never the one answering.
+
+It is worth naming, though, because it is the only code in the binary that could
+open a socket at all: an X display spelled `host:0` is reached over TCP, which is
+how `getaddrinfo` ends up among the binary's imports. The offline claim above is
+about what the app does, not about which symbols the linker kept — bluejay never
+asks for that path, and it can only be taken by a `DISPLAY` naming a remote host
+after the Wayland clipboard has already failed.

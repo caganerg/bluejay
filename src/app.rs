@@ -62,6 +62,19 @@ struct Modal {
     focused: bool,
 }
 
+impl Modal {
+    /// A question with an empty text box, not yet focused. "Rename" is the one
+    /// that seeds the box, and does it with `..Modal::new(..)`.
+    fn new(kind: ModalKind, target: PathBuf) -> Self {
+        Self {
+            kind,
+            target,
+            input: String::new(),
+            focused: false,
+        }
+    }
+}
+
 pub struct App {
     root: PathBuf,
     tree: Node,
@@ -112,7 +125,7 @@ impl App {
     /// question instead: autosave fires on a timer and would otherwise write
     /// over whatever arrived — a sync, a `git pull`, an edit in another program
     /// — without anyone having asked it to.
-    pub fn save_now(&mut self) {
+    fn save_now(&mut self) {
         if !self.dirty {
             return;
         }
@@ -124,12 +137,7 @@ impl App {
             // Ask once. Until it is answered the buffer stays dirty and this
             // returns early, so the autosave timer cannot ask again every frame.
             if self.modal.is_none() {
-                self.modal = Some(Modal {
-                    kind: ModalKind::Conflict,
-                    target: path,
-                    input: String::new(),
-                    focused: false,
-                });
+                self.modal = Some(Modal::new(ModalKind::Conflict, path));
             }
             return;
         }
@@ -231,6 +239,23 @@ impl App {
         self.status = format!("Vault: {}", self.root.display());
     }
 
+    /// Follow the open note when `from` becomes `to` — as the note itself, or
+    /// as something inside the folder that moved.
+    ///
+    /// Autosave writes to `open_path` on a timer, so a path left pointing at
+    /// the old name would either fail or, once the note is renamed back over
+    /// it, write the buffer to a note nobody is looking at.
+    fn follow_move(&mut self, from: &Path, to: &Path) {
+        let Some(open) = self.open_path.clone() else {
+            return;
+        };
+        if open == from {
+            self.open_path = Some(to.to_path_buf());
+        } else if let Ok(rest) = open.strip_prefix(from) {
+            self.open_path = Some(to.join(rest));
+        }
+    }
+
     fn apply(&mut self, cmd: Cmd) {
         match cmd {
             Cmd::Open(path) => self.open(path),
@@ -241,12 +266,7 @@ impl App {
                 // copy the file no longer matches.
                 match self.open_path.clone() {
                     Some(path) if self.dirty => {
-                        self.modal = Some(Modal {
-                            kind: ModalKind::Reload,
-                            target: path,
-                            input: String::new(),
-                            focused: false,
-                        })
+                        self.modal = Some(Modal::new(ModalKind::Reload, path))
                     }
                     Some(_) => self.reload_open(),
                     None => {}
@@ -263,22 +283,8 @@ impl App {
                     self.set_root(root);
                 }
             }
-            Cmd::NewNote(parent) => {
-                self.modal = Some(Modal {
-                    kind: ModalKind::NewNote,
-                    target: parent,
-                    input: String::new(),
-                    focused: false,
-                })
-            }
-            Cmd::NewFolder(parent) => {
-                self.modal = Some(Modal {
-                    kind: ModalKind::NewFolder,
-                    target: parent,
-                    input: String::new(),
-                    focused: false,
-                })
-            }
+            Cmd::NewNote(parent) => self.modal = Some(Modal::new(ModalKind::NewNote, parent)),
+            Cmd::NewFolder(parent) => self.modal = Some(Modal::new(ModalKind::NewFolder, parent)),
             Cmd::Rename(path) => {
                 let current = if path.is_dir() {
                     name_of(&path)
@@ -287,20 +293,11 @@ impl App {
                     vault::note_stem(&name_of(&path)).to_owned()
                 };
                 self.modal = Some(Modal {
-                    kind: ModalKind::Rename,
-                    target: path,
                     input: current,
-                    focused: false,
+                    ..Modal::new(ModalKind::Rename, path)
                 })
             }
-            Cmd::Delete(path) => {
-                self.modal = Some(Modal {
-                    kind: ModalKind::Delete,
-                    target: path,
-                    input: String::new(),
-                    focused: false,
-                })
-            }
+            Cmd::Delete(path) => self.modal = Some(Modal::new(ModalKind::Delete, path)),
             Cmd::Copy(path) => {
                 self.status = format!("Copied “{}”", name_of(&path));
                 self.clipboard = Some((path, ClipOp::Copy));
@@ -350,15 +347,7 @@ impl App {
         match result {
             Ok(()) => {
                 if op == ClipOp::Cut {
-                    // Autosave has to follow the note, whether it moved itself
-                    // or sat inside the folder that did.
-                    if let Some(open) = self.open_path.clone() {
-                        if open == src {
-                            self.open_path = Some(dest.clone());
-                        } else if let Ok(rest) = open.strip_prefix(&src) {
-                            self.open_path = Some(dest.join(rest));
-                        }
-                    }
+                    self.follow_move(&src, &dest);
                     self.clipboard = None;
                 }
                 self.refresh();
@@ -456,14 +445,7 @@ impl App {
                 self.save_now();
                 match fs::rename(&modal.target, &dest) {
                     Ok(()) => {
-                        // Follow the open note if it (or its folder) moved.
-                        if let Some(open) = self.open_path.clone() {
-                            if open == modal.target {
-                                self.open_path = Some(dest.clone());
-                            } else if let Ok(rest) = open.strip_prefix(&modal.target) {
-                                self.open_path = Some(dest.join(rest));
-                            }
-                        }
+                        self.follow_move(&modal.target, &dest);
                         self.refresh();
                     }
                     Err(err) => self.status = format!("Could not rename: {err}"),
@@ -688,69 +670,66 @@ impl App {
                     .size(15.0),
             );
             ui.add_space(10.0);
-            {
-                if matches!(modal.kind, ModalKind::Conflict | ModalKind::Reload) {
-                    let name = name_of(&modal.target);
-                    let (question, detail) = match modal.kind {
-                        ModalKind::Conflict => (
-                            format!("“{name}” changed on disk."),
-                            "Your unsaved edits and the file no longer agree.",
-                        ),
-                        _ => (
-                            format!("“{name}” has unsaved edits."),
-                            "Reloading throws them away.",
-                        ),
-                    };
-                    ui.label(question);
-                    ui.label(egui::RichText::new(detail).weak());
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Keep my version").clicked() {
-                            confirm = true;
-                        }
-                        if ui.button("Load from disk").clicked() {
-                            reload = true;
-                        }
-                    });
-                } else if modal.kind == ModalKind::Delete {
-                    let is_dir = modal.target.is_dir();
-                    ui.label(format!("Delete “{}”?", name_of(&modal.target)));
-                    if is_dir {
-                        ui.label(
-                            egui::RichText::new("The folder and everything inside it is removed.")
-                                .weak(),
-                        );
-                    }
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
-                            close = true;
-                        }
-                        if ui.button("Delete").clicked() {
-                            confirm = true;
-                        }
-                    });
-                } else {
-                    ui.label(prompt);
-                    let response = ui.text_edit_singleline(&mut modal.input);
-                    if !modal.focused {
-                        response.request_focus();
-                        modal.focused = true;
-                    }
-                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            if matches!(modal.kind, ModalKind::Conflict | ModalKind::Reload) {
+                let name = name_of(&modal.target);
+                let (question, detail) = match modal.kind {
+                    ModalKind::Conflict => (
+                        format!("“{name}” changed on disk."),
+                        "Your unsaved edits and the file no longer agree.",
+                    ),
+                    _ => (
+                        format!("“{name}” has unsaved edits."),
+                        "Reloading throws them away.",
+                    ),
+                };
+                ui.label(question);
+                ui.label(egui::RichText::new(detail).weak());
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Keep my version").clicked() {
                         confirm = true;
                     }
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
-                            close = true;
-                        }
-                        if ui.button("OK").clicked() {
-                            confirm = true;
-                        }
-                    });
+                    if ui.button("Load from disk").clicked() {
+                        reload = true;
+                    }
+                });
+            } else if modal.kind == ModalKind::Delete {
+                let is_dir = modal.target.is_dir();
+                ui.label(format!("Delete “{}”?", name_of(&modal.target)));
+                if is_dir {
+                    ui.label(
+                        egui::RichText::new("The folder and everything inside it is removed.")
+                            .weak(),
+                    );
                 }
-
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                    if ui.button("Delete").clicked() {
+                        confirm = true;
+                    }
+                });
+            } else {
+                ui.label(prompt);
+                let response = ui.text_edit_singleline(&mut modal.input);
+                if !modal.focused {
+                    response.request_focus();
+                    modal.focused = true;
+                }
+                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    confirm = true;
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                    if ui.button("OK").clicked() {
+                        confirm = true;
+                    }
+                });
             }
         });
 
@@ -810,10 +789,6 @@ impl eframe::App for App {
         if ctx.input(|i| i.viewport().close_requested()) {
             self.save_now();
         }
-    }
-
-    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
-        self.save_now();
     }
 }
 
@@ -1124,6 +1099,61 @@ mod tests {
 
         assert!(path.is_file(), "the note must still be notes.md.md");
         assert_eq!(fs::read_to_string(&path).unwrap(), "body");
+    }
+
+    /// The open note has to follow the folder it sits in when that folder is
+    /// renamed. Autosave writes to `open_path` on a timer, so a path left
+    /// behind would keep writing to a name nothing answers to.
+    #[test]
+    fn the_open_note_follows_its_renamed_folder() {
+        let dir = TempDir::new("follow-rename");
+        let mut app = App::new(dir.0.clone());
+        let folder = dir.0.join("Ideas");
+        fs::create_dir(&folder).unwrap();
+        let note = folder.join("note.md");
+        fs::write(&note, "body").unwrap();
+        app.refresh();
+        app.open(note);
+
+        app.apply(Cmd::Rename(folder));
+        let mut modal = app.modal.take().expect("modal");
+        modal.input = "Plans".to_owned();
+        app.confirm_modal(&modal);
+
+        let moved = dir.0.join("Plans").join("note.md");
+        assert_eq!(app.open_path.as_deref(), Some(moved.as_path()));
+
+        // And the next save lands on the note where it now is.
+        app.buffer = "edited".to_owned();
+        app.dirty = true;
+        app.save_now();
+        assert_eq!(fs::read_to_string(&moved).unwrap(), "edited");
+        assert!(app.modal.is_none(), "a move of our own is not a conflict");
+    }
+
+    /// The same rule by the other route: cut the note and paste it elsewhere.
+    #[test]
+    fn the_open_note_follows_a_cut_and_paste() {
+        let dir = TempDir::new("follow-paste");
+        let mut app = App::new(dir.0.clone());
+        let note = dir.0.join("note.md");
+        fs::write(&note, "body").unwrap();
+        let archive = dir.0.join("Archive");
+        fs::create_dir(&archive).unwrap();
+        app.refresh();
+        app.open(note.clone());
+
+        app.apply(Cmd::Cut(note.clone()));
+        app.apply(Cmd::Paste(archive.clone()));
+
+        let moved = archive.join("note.md");
+        assert!(!note.exists(), "the note was moved, not copied");
+        assert_eq!(app.open_path.as_deref(), Some(moved.as_path()));
+
+        app.buffer = "edited".to_owned();
+        app.dirty = true;
+        app.save_now();
+        assert_eq!(fs::read_to_string(&moved).unwrap(), "edited");
     }
 
     /// `create_dir_all` succeeded on a folder that was already there, so the

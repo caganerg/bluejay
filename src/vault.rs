@@ -128,8 +128,24 @@ pub fn build_index(node: &Node, index: &mut HashMap<String, PathBuf>) {
     }
 }
 
+/// Where the vault path is remembered.
 fn config_file() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("bluejay").join("vault.txt"))
+    let base = config_dir(std::env::var_os("XDG_CONFIG_HOME"), std::env::home_dir())?;
+    Some(base.join("bluejay").join("vault.txt"))
+}
+
+/// `$XDG_CONFIG_HOME`, or `~/.config` when it is unset — the one rule the
+/// config file's location follows, taken apart from the environment so it can
+/// be tested without writing to it.
+///
+/// A relative `XDG_CONFIG_HOME` is ignored rather than resolved, as the base
+/// directory specification asks: resolving it would put the config wherever the
+/// app happened to be started from, and the next launch from another directory
+/// would not find it.
+fn config_dir(xdg: Option<std::ffi::OsString>, home: Option<PathBuf>) -> Option<PathBuf> {
+    xdg.map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| home.map(|home| home.join(".config")))
 }
 
 /// The last used vault path, if it still exists.
@@ -476,6 +492,28 @@ pub(crate) mod tests {
         assert_eq!(decode_root(b"/home/x/notes\n"), PathBuf::from("/home/x/notes"));
         assert_eq!(decode_root(b"/home/x/notes\r\n"), PathBuf::from("/home/x/notes"));
         assert_eq!(decode_root(b"/home/x/notes\nstray"), PathBuf::from("/home/x/notes"));
+    }
+
+    #[test]
+    fn puts_the_config_where_xdg_says() {
+        let home = Some(PathBuf::from("/home/x"));
+        let xdg = |s: &str| Some(std::ffi::OsString::from(s));
+
+        // An absolute XDG_CONFIG_HOME is the config base as it stands.
+        assert_eq!(
+            config_dir(xdg("/tmp/cfg"), home.clone()),
+            Some(PathBuf::from("/tmp/cfg"))
+        );
+        // Unset, empty or relative all fall back to ~/.config; resolving a
+        // relative one would tie the config to the working directory.
+        for value in [None, xdg(""), xdg("cfg"), xdg("./cfg")] {
+            assert_eq!(
+                config_dir(value, home.clone()),
+                Some(PathBuf::from("/home/x/.config"))
+            );
+        }
+        // Without a home there is nowhere to fall back to.
+        assert_eq!(config_dir(None, None), None);
     }
 
     /// Paths are bytes on Unix. `to_string_lossy` would swap the invalid ones
