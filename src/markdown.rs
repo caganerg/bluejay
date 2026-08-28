@@ -203,7 +203,21 @@ pub fn render(ui: &mut Ui, source: &str) -> Option<Action> {
                     style.quote = true;
                 }
                 Tag::CodeBlock(_) => code_block = Some(String::new()),
-                Tag::List(start) => list_stack.push(start),
+                Tag::List(start) => {
+                    // A nested list interrupts the item holding it, and that
+                    // item's own text is still waiting here. Draw it now, at
+                    // the indent and with the marker it was given: left to
+                    // pile up, it runs into the first nested item and is drawn
+                    // under *that* item's marker instead.
+                    flush_block(
+                        ui,
+                        &mut inlines,
+                        prefix.take(),
+                        indent(&list_stack, quote_depth),
+                        &mut action,
+                    );
+                    list_stack.push(start);
+                }
                 Tag::Item => {
                     prefix = Some(match list_stack.last_mut() {
                         Some(Some(n)) => {
@@ -615,6 +629,72 @@ mod tests {
         crate::install_fonts(&ctx);
         ctx.run_ui(Default::default(), add_contents)
             .drop_without_applying_deltas();
+    }
+
+    /// Every string the renderer actually drew, in order.
+    ///
+    /// The layout tests above only catch panics; this reads the galleys back
+    /// out of the frame's shapes, which is the only way to tell what a block
+    /// ended up looking like.
+    fn drawn(source: &str) -> Vec<String> {
+        fn collect(shape: &Shape, out: &mut Vec<String>) {
+            match shape {
+                Shape::Text(text) => out.push(text.galley.text().to_owned()),
+                Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let ctx = egui::Context::default();
+        crate::install_fonts(&ctx);
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(800.0, 600.0))),
+            ..Default::default()
+        };
+        let output = ctx.run_ui(input, |ui| {
+            render(ui, source);
+        });
+
+        let mut out = Vec::new();
+        for clipped in &output.shapes {
+            collect(&clipped.shape, &mut out);
+        }
+        output.drop_without_applying_deltas();
+        out
+    }
+
+    /// A nested list used to swallow the text of the item containing it: the
+    /// two were drawn as one run, under the nested item's marker.
+    #[test]
+    fn a_nested_list_does_not_swallow_its_parent_item() {
+        let drawn = drawn("- outer one\n- outer two\n  1. inner\n");
+
+        assert!(
+            drawn.iter().any(|line| line.contains("outer two")),
+            "the item holding the nested list must be drawn: {drawn:?}"
+        );
+        assert!(
+            !drawn.iter().any(|line| line.contains("outer twoinner")),
+            "and not run into the nested item: {drawn:?}"
+        );
+        // Its own bullet, not the nested list's "1.".
+        let bullets = drawn.iter().filter(|line| line.starts_with('•')).count();
+        assert_eq!(bullets, 2, "both outer items keep a bullet: {drawn:?}");
+    }
+
+    /// The whole point of the `LayoutJob` batching: a paragraph is one galley,
+    /// not one per word.
+    #[test]
+    fn a_paragraph_is_drawn_as_one_run() {
+        let drawn = drawn("one two three four five six seven\n");
+        assert!(
+            drawn.iter().any(|line| line.contains("one two three")),
+            "words must share a galley: {drawn:?}"
+        );
     }
 
     fn split(source: &str) -> Vec<String> {
