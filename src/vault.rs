@@ -112,3 +112,42 @@ pub fn valid_name(name: &str) -> bool {
         && name != "."
         && name != ".."
 }
+
+/// A free path for `name` inside `dir`, appending " (2)", " (3)" … before the
+/// `.md` extension until nothing is in the way. Pasting never overwrites.
+pub fn unique_dest(dir: &Path, name: &str) -> PathBuf {
+    let first = dir.join(name);
+    if !first.exists() {
+        return first;
+    }
+    // Folders are the only other thing the tree shows, and they carry no
+    // extension worth preserving.
+    let (stem, ext) = match name.strip_suffix(".md") {
+        Some(stem) => (stem, ".md"),
+        None => (name, ""),
+    };
+    let mut n: u32 = 2;
+    loop {
+        let candidate = dir.join(format!("{stem} ({n}){ext}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// Copy a file, or a directory and everything under it, to `dest`, which must
+/// not exist yet. Unlike `scan`, this takes the folder as it really is: hidden
+/// files and non-markdown attachments come along.
+pub fn copy_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
+    if src.is_dir() {
+        fs::create_dir(dest)?;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            copy_recursive(&entry.path(), &dest.join(entry.file_name()))?;
+        }
+        Ok(())
+    } else {
+        fs::copy(src, dest).map(|_| ())
+    }
+}

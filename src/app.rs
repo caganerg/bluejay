@@ -27,6 +27,17 @@ enum Cmd {
     NewFolder(PathBuf),
     Rename(PathBuf),
     Delete(PathBuf),
+    Copy(PathBuf),
+    Cut(PathBuf),
+    /// Paste whatever is on the clipboard into this folder.
+    Paste(PathBuf),
+}
+
+/// Which of the two the clipboard is holding a path for.
+#[derive(Clone, Copy, PartialEq)]
+enum ClipOp {
+    Copy,
+    Cut,
 }
 
 #[derive(PartialEq)]
@@ -55,6 +66,9 @@ pub struct App {
     dirty: bool,
     last_edit: Instant,
     modal: Option<Modal>,
+    /// The one item “Copy” or “Cut” put aside, if any. Internal to the window:
+    /// nothing is handed to the system clipboard.
+    clipboard: Option<(PathBuf, ClipOp)>,
     status: String,
 }
 
@@ -69,6 +83,7 @@ impl App {
             dirty: false,
             last_edit: Instant::now(),
             modal: None,
+            clipboard: None,
             status: String::new(),
         };
         app.refresh();
@@ -199,6 +214,80 @@ impl App {
                     focused: false,
                 })
             }
+            Cmd::Copy(path) => {
+                self.status = format!("Copied “{}”", name_of(&path));
+                self.clipboard = Some((path, ClipOp::Copy));
+            }
+            Cmd::Cut(path) => {
+                self.status = format!("Cut “{}”", name_of(&path));
+                self.clipboard = Some((path, ClipOp::Cut));
+            }
+            Cmd::Paste(folder) => self.paste_into(&folder),
+        }
+    }
+
+    /// Drop the clipboard item into `folder`, copying or moving it depending on
+    /// how it got there. The name is made unique rather than overwriting.
+    fn paste_into(&mut self, folder: &Path) {
+        let Some((src, op)) = self.clipboard.clone() else {
+            return;
+        };
+        if !src.exists() {
+            self.clipboard = None;
+            self.status = format!("“{}” is no longer there", name_of(&src));
+            return;
+        }
+        // A folder cannot contain itself, and copying one into its own subtree
+        // would walk into the copy it is writing.
+        if src.is_dir() && folder.starts_with(&src) {
+            self.status = "Can't paste a folder into itself".to_owned();
+            return;
+        }
+        if op == ClipOp::Cut && src.parent() == Some(folder) {
+            self.clipboard = None;
+            self.status = format!("“{}” is already there", name_of(&src));
+            return;
+        }
+
+        let dest = vault::unique_dest(folder, &name_of(&src));
+        let verb = match op {
+            ClipOp::Copy => "copy",
+            ClipOp::Cut => "move",
+        };
+        // The buffer belongs to a path that is about to move out from under it.
+        self.save_now();
+        let result = match op {
+            ClipOp::Copy => vault::copy_recursive(&src, &dest),
+            ClipOp::Cut => fs::rename(&src, &dest),
+        };
+        match result {
+            Ok(()) => {
+                if op == ClipOp::Cut {
+                    // Autosave has to follow the note, whether it moved itself
+                    // or sat inside the folder that did.
+                    if let Some(open) = self.open_path.clone() {
+                        if open == src {
+                            self.open_path = Some(dest.clone());
+                        } else if let Ok(rest) = open.strip_prefix(&src) {
+                            self.open_path = Some(dest.join(rest));
+                        }
+                    }
+                    self.clipboard = None;
+                }
+                self.refresh();
+                let done = if op == ClipOp::Cut { "Moved" } else { "Copied" };
+                self.status = format!("{done} to {}", self.folder_label(folder));
+            }
+            Err(err) => self.status = format!("Could not {verb} {}: {err}", name_of(&src)),
+        }
+    }
+
+    /// A folder named the way the sidebar shows it: relative to the vault, or
+    /// the vault's own name at the top.
+    fn folder_label(&self, path: &Path) -> String {
+        match path.strip_prefix(&self.root) {
+            Ok(rel) if !rel.as_os_str().is_empty() => format!("{}/", rel.display()),
+            _ => format!("{}/", self.tree.name),
         }
     }
 
@@ -306,6 +395,7 @@ impl App {
         let tree = &self.tree;
         let selected = self.open_path.clone();
         let root = self.root.clone();
+        let can_paste = self.clipboard.is_some();
 
         egui::Panel::left("sidebar")
             .resizable(true)
@@ -323,6 +413,17 @@ impl App {
                     ));
                 if vault.clicked() {
                     cmds.push(Cmd::ChangeRoot);
+                }
+                // The vault folder has no row of its own in the tree, so its
+                // "Paste" hangs off the header. With an empty clipboard there
+                // is nothing to put in the menu, so none is attached.
+                if can_paste {
+                    vault.context_menu(|ui| {
+                        if ui.button("Paste").clicked() {
+                            cmds.push(Cmd::Paste(root.clone()));
+                            ui.close();
+                        }
+                    });
                 }
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
@@ -342,7 +443,7 @@ impl App {
                     .id_salt("tree")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        tree_ui(ui, tree, selected.as_deref(), &mut cmds);
+                        tree_ui(ui, tree, selected.as_deref(), can_paste, &mut cmds);
                     });
             });
 
@@ -554,12 +655,18 @@ fn name_of(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn tree_ui(ui: &mut Ui, node: &Node, selected: Option<&Path>, cmds: &mut Vec<Cmd>) {
+fn tree_ui(
+    ui: &mut Ui,
+    node: &Node,
+    selected: Option<&Path>,
+    can_paste: bool,
+    cmds: &mut Vec<Cmd>,
+) {
     for child in &node.children {
         if child.is_dir {
             let header = egui::CollapsingHeader::new(format!("🗀  {}", child.name))
                 .id_salt(&child.path)
-                .show(ui, |ui| tree_ui(ui, child, selected, cmds));
+                .show(ui, |ui| tree_ui(ui, child, selected, can_paste, cmds));
             header.header_response.context_menu(|ui| {
                 if ui.button("New note here").clicked() {
                     cmds.push(Cmd::NewNote(child.path.clone()));
@@ -569,6 +676,21 @@ fn tree_ui(ui: &mut Ui, node: &Node, selected: Option<&Path>, cmds: &mut Vec<Cmd
                     cmds.push(Cmd::NewFolder(child.path.clone()));
                     ui.close();
                 }
+                ui.separator();
+                if ui.button("Copy").clicked() {
+                    cmds.push(Cmd::Copy(child.path.clone()));
+                    ui.close();
+                }
+                if ui.button("Cut").clicked() {
+                    cmds.push(Cmd::Cut(child.path.clone()));
+                    ui.close();
+                }
+                // Only folders take a paste, and only with something waiting.
+                if can_paste && ui.button("Paste").clicked() {
+                    cmds.push(Cmd::Paste(child.path.clone()));
+                    ui.close();
+                }
+                ui.separator();
                 if ui.button("Rename").clicked() {
                     cmds.push(Cmd::Rename(child.path.clone()));
                     ui.close();
@@ -585,6 +707,15 @@ fn tree_ui(ui: &mut Ui, node: &Node, selected: Option<&Path>, cmds: &mut Vec<Cmd
                 cmds.push(Cmd::Open(child.path.clone()));
             }
             response.context_menu(|ui| {
+                if ui.button("Copy").clicked() {
+                    cmds.push(Cmd::Copy(child.path.clone()));
+                    ui.close();
+                }
+                if ui.button("Cut").clicked() {
+                    cmds.push(Cmd::Cut(child.path.clone()));
+                    ui.close();
+                }
+                ui.separator();
                 if ui.button("Rename").clicked() {
                     cmds.push(Cmd::Rename(child.path.clone()));
                     ui.close();
