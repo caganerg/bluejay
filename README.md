@@ -34,6 +34,28 @@ On first launch bluejay asks for the folder your notes live in. The choice is
 remembered in `~/.config/bluejay/vault.txt` (delete that file to pick a
 different folder).
 
+## Desktop entry and icon
+
+The logo lives at `assets/logo.png` (512×512) and is baked into the binary as
+the window icon. On Wayland that alone shows nothing: there is no window-icon
+protocol winit speaks, so `set_window_icon` is a silent no-op and the icon a
+taskbar or app switcher draws comes from a desktop entry matched against the
+window's **app id**, which bluejay sets to `bluejay`. Install both to get the
+logo out of the binary and onto your bar:
+
+```sh
+install -Dm755 target/release/bluejay   ~/.local/bin/bluejay
+install -Dm644 assets/logo.png          ~/.local/share/icons/hicolor/512x512/apps/bluejay.png
+install -Dm644 assets/bluejay.desktop   ~/.local/share/applications/bluejay.desktop
+gtk-update-icon-cache -f ~/.local/share/icons/hicolor 2>/dev/null || true
+update-desktop-database ~/.local/share/applications 2>/dev/null || true
+```
+
+The `Icon=bluejay` line in the entry is what points at the installed PNG, and
+`StartupWMClass=bluejay` is what ties a running window back to the entry. Rename
+either the app id or the desktop file and the window goes back to a generic
+icon.
+
 ## What it does
 
 - **Tree** — mirrors the folder structure on disk, showing directories and
@@ -80,6 +102,7 @@ status bar at the bottom reports saves and any filesystem errors.
 | `src/app.rs` | the three panes, sidebar commands, modals, autosave |
 | `src/markdown.rs` | `pulldown-cmark` events → egui widgets, wiki-link scanning |
 | `src/vault.rs` | directory scan, note-name index, config file |
+| `assets/` | the two typefaces, the logo, and the desktop entry |
 
 Five dependencies: `eframe`, `pulldown-cmark`, `rfd`, `dirs`, and a direct
 `winit` pin that exists only to select Wayland features — see below.

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=bluejay
+GenericName=Markdown Notes
+Comment=A small native markdown note app
+Exec=bluejay
+Icon=bluejay
+Terminal=false
+Categories=Utility;TextEditor;
+Keywords=markdown;notes;editor;
+MimeType=text/markdown;
+StartupNotify=true
+StartupWMClass=bluejay

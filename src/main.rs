@@ -20,12 +20,26 @@ pub const EDITOR_MONO: &str = "editor_mono";
 pub const PREVIEW_SANS: &str = "preview_sans";
 pub const PREVIEW_SANS_BOLD: &str = "preview_sans_bold";
 
+/// Wayland app id, and the basename the desktop entry must carry.
+const APP_ID: &str = "bluejay";
+
 fn main() -> ExitCode {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1280.0, 800.0])
+        .with_min_inner_size([700.0, 400.0])
+        .with_title("bluejay")
+        // eframe would derive this from the app name anyway, but the desktop
+        // entry has to match it exactly, so it is pinned here rather than left
+        // to a default: `bluejay.desktop` is what a compositor looks up to find
+        // the icon, and it finds it by this app id.
+        .with_app_id(APP_ID);
+
+    if let Some(icon) = load_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([700.0, 400.0])
-            .with_title("bluejay"),
+        viewport,
         ..Default::default()
     };
 
@@ -50,6 +64,24 @@ fn main() -> ExitCode {
                  compositor; there is no X11 or XWayland fallback."
             );
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// The window icon, decoded from the logo baked into the binary.
+///
+/// Wayland has no window-icon protocol that winit speaks, so this reaches the
+/// compositor nowhere and the taskbar icon comes from `bluejay.desktop` instead
+/// — see the README. It is set anyway because it costs one decode at startup
+/// and is the only thing that would carry the logo on any other backend; a
+/// failure here is not worth refusing to start over, so a bad decode just
+/// leaves eframe's default icon in place.
+fn load_icon() -> Option<egui::IconData> {
+    match eframe::icon_data::from_png_bytes(&include_bytes!("../assets/logo.png")[..]) {
+        Ok(icon) => Some(icon),
+        Err(err) => {
+            eprintln!("bluejay: could not decode the window icon: {err}");
+            None
         }
     }
 }
