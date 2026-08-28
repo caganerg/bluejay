@@ -59,13 +59,14 @@ icon.
 ## What it does
 
 - **Tree** — mirrors the folder structure on disk, showing directories and
-  `.md` files (hidden files and symlinks are skipped). Click a folder to expand
-  it, a note to open it. The toolbar creates notes and folders at the vault
-  root; right-click any entry for *New note here*, *New folder here*, *Copy*,
-  *Cut*, *Rename* and *Delete*. Deleting always asks first, and deleting a
-  folder removes its contents. *Paste* shows up on folders (and on the vault
-  button at the top) once something has been copied or cut; a name already
-  taken at the destination gains a “ (2)” rather than being overwritten.
+  `.md` files — the extension in any case — while hidden files and symlinks are
+  skipped. Click a folder to expand it, a note to open it. The toolbar creates
+  notes and folders at the vault root; right-click any entry for *New note
+  here*, *New folder here*, *Copy*, *Cut*, *Rename* and *Delete*. Deleting
+  always asks first, and deleting a folder removes its contents. *Paste* shows
+  up on folders (and on the vault button at the top) once something has been
+  copied or cut; a name already taken at the destination gains a “ (2)” rather
+  than being overwritten.
 - **Editor** — the raw markdown, monospace and plain. No syntax highlighting.
 - **Preview** — re-rendered from the editor buffer every frame, so it tracks
   typing immediately. Headings, bold/italic/strikethrough, inline code, fenced

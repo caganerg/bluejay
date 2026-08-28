@@ -283,7 +283,8 @@ impl App {
                 let current = if path.is_dir() {
                     name_of(&path)
                 } else {
-                    name_of(&path).trim_end_matches(".md").to_owned()
+                    // The same stem the sidebar shows for this row.
+                    vault::note_stem(&name_of(&path)).to_owned()
                 };
                 self.modal = Some(Modal {
                     kind: ModalKind::Rename,
@@ -391,10 +392,12 @@ impl App {
 
         match modal.kind {
             ModalKind::NewNote => {
-                let file = if name.ends_with(".md") {
-                    name.clone()
-                } else {
+                // Typing the extension is allowed, in any case; leaving it off
+                // is the usual thing and gets it added.
+                let file = if vault::note_stem(&name) == name {
                     format!("{name}.md")
+                } else {
+                    name.clone()
                 };
                 let path = modal.target.join(&file);
                 // `create_new` is the existence check as well as the create, so
@@ -412,18 +415,32 @@ impl App {
             }
             ModalKind::NewFolder => {
                 let path = modal.target.join(&name);
-                if let Err(err) = fs::create_dir_all(&path) {
-                    self.status = format!("Could not create {name}: {err}");
-                } else {
-                    self.refresh();
+                // `create_dir`, not `create_dir_all`: the latter succeeds when
+                // the folder is already there, so "New folder" on a name that
+                // exists looked like it had made one. `valid_name` rules out
+                // separators, so there is never a parent left to create.
+                match fs::create_dir(&path) {
+                    Ok(()) => self.refresh(),
+                    Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                        self.status = format!("{name} already exists");
+                    }
+                    Err(err) => self.status = format!("Could not create {name}: {err}"),
                 }
             }
             ModalKind::Rename => {
                 let is_dir = modal.target.is_dir();
-                let file = if is_dir || name.ends_with(".md") {
+                let old = name_of(&modal.target);
+                let file = if is_dir {
                     name.clone()
                 } else {
-                    format!("{name}.md")
+                    // The box was seeded with the stem, so put back exactly the
+                    // extension it was seeded without, spelled the way it was.
+                    // Renaming edits the name; it does not decide what kind of
+                    // file this is, and anything less than the exact inverse
+                    // drops a suffix on the way back — which is how
+                    // "notes.md.md" used to become "notes.md" by being
+                    // confirmed unchanged.
+                    format!("{name}{}", &old[vault::note_stem(&old).len()..])
                 };
                 let Some(parent) = modal.target.parent() else {
                     return;
@@ -461,13 +478,15 @@ impl App {
                 };
                 match result {
                     Ok(()) => {
-                        if let Some(open) = self.open_path.clone() {
-                            if open == modal.target || open.starts_with(&modal.target) {
-                                self.open_path = None;
-                                self.open_mtime = None;
-                                self.buffer.clear();
-                                self.dirty = false;
-                            }
+                        // The open note went with it, either as the target or
+                        // as something inside the folder that was the target.
+                        if let Some(open) = self.open_path.clone()
+                            && (open == modal.target || open.starts_with(&modal.target))
+                        {
+                            self.open_path = None;
+                            self.open_mtime = None;
+                            self.buffer.clear();
+                            self.dirty = false;
                         }
                         self.refresh();
                         self.status = format!("Deleted {}", name_of(&modal.target));
@@ -490,9 +509,11 @@ impl App {
 
     fn sidebar(&mut self, ui: &mut Ui) {
         let mut cmds: Vec<Cmd> = Vec::new();
+        // Borrowed, not cloned: the panel closure only reads them, and this
+        // runs on every frame the window draws.
         let tree = &self.tree;
-        let selected = self.open_path.clone();
-        let root = self.root.clone();
+        let selected = self.open_path.as_deref();
+        let root = self.root.as_path();
         let can_paste = self.clipboard.is_some();
 
         egui::Panel::left("sidebar")
@@ -518,7 +539,7 @@ impl App {
                 if can_paste {
                     vault.context_menu(|ui| {
                         if ui.button("Paste").clicked() {
-                            cmds.push(Cmd::Paste(root.clone()));
+                            cmds.push(Cmd::Paste(root.to_path_buf()));
                             ui.close();
                         }
                     });
@@ -526,10 +547,10 @@ impl App {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui.button("New note").clicked() {
-                        cmds.push(Cmd::NewNote(root.clone()));
+                        cmds.push(Cmd::NewNote(root.to_path_buf()));
                     }
                     if ui.button("New folder").clicked() {
-                        cmds.push(Cmd::NewFolder(root.clone()));
+                        cmds.push(Cmd::NewFolder(root.to_path_buf()));
                     }
                     if ui.button("⟳").on_hover_text("Reload from disk").clicked() {
                         cmds.push(Cmd::Reload);
@@ -541,7 +562,7 @@ impl App {
                     .id_salt("tree")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        tree_ui(ui, tree, selected.as_deref(), can_paste, &mut cmds);
+                        tree_ui(ui, tree, selected, can_paste, &mut cmds);
                     });
             });
 
@@ -655,11 +676,19 @@ impl App {
         // and write it, or give it up and take what is on disk.
         let mut reload = false;
 
-        egui::Window::new(title)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
+        // A real modal, not a window: it draws a backdrop that swallows clicks,
+        // so the tree behind cannot be used to start a second operation — which
+        // with a `Window` replaced the pending one and lost the question.
+        let response = egui::Modal::new(egui::Id::new("bluejay_modal")).show(ctx, |ui| {
+            ui.set_min_width(280.0);
+            // A modal carries no title bar of its own.
+            ui.label(
+                egui::RichText::new(title)
+                    .family(egui::FontFamily::Name(crate::PREVIEW_SANS_BOLD.into()))
+                    .size(15.0),
+            );
+            ui.add_space(10.0);
+            {
                 if matches!(modal.kind, ModalKind::Conflict | ModalKind::Reload) {
                     let name = name_of(&modal.target);
                     let (question, detail) = match modal.kind {
@@ -722,15 +751,17 @@ impl App {
                     });
                 }
 
-                // Escape dismisses every modal but these two: leaving the
-                // question unanswered would only have `save_now` ask it again
-                // on the next frame, which reads as a modal that will not close.
-                if !matches!(modal.kind, ModalKind::Conflict | ModalKind::Reload)
-                    && ui.input(|i| i.key_pressed(egui::Key::Escape))
-                {
-                    close = true;
-                }
-            });
+            }
+        });
+
+        // Escape, or a click on the backdrop, dismisses every modal but these
+        // two: leaving the question unanswered would only have `save_now` ask
+        // it again on the next frame, which reads as a modal that will not
+        // close.
+        if !matches!(modal.kind, ModalKind::Conflict | ModalKind::Reload) && response.should_close()
+        {
+            close = true;
+        }
 
         if reload {
             self.reload_open();
@@ -745,14 +776,18 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S)) {
+        // The modal's backdrop stops the pointer but not a shortcut, and while
+        // one is open the answer to what should happen to the buffer is exactly
+        // what is being asked.
+        if self.modal.is_none() && ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S))
+        {
             self.save_now();
         }
 
         self.sidebar(ui);
         self.preview(ui);
 
-        let status = self.status.clone();
+        let status = self.status.as_str();
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(status).weak().size(12.0));
@@ -1026,6 +1061,60 @@ mod tests {
             app.modal.as_ref().map(|m| &m.kind),
             Some(ModalKind::Reload)
         ));
+    }
+
+    /// The rename box is seeded with the stem the sidebar shows, so pressing OK
+    /// unchanged is a no-op rather than a quiet loss of a suffix.
+    #[test]
+    fn renaming_offers_the_name_the_sidebar_shows() {
+        let dir = TempDir::new("rename-seed");
+        let mut app = App::new(dir.0.clone());
+        for (file, want) in [
+            ("plain.md", "plain"),
+            ("notes.md.md", "notes.md"),
+            ("Upper.MD", "Upper"),
+            ("attachment.txt", "attachment.txt"),
+        ] {
+            let path = dir.0.join(file);
+            fs::write(&path, "").unwrap();
+            app.apply(Cmd::Rename(path));
+            assert_eq!(app.modal.take().expect("modal").input, want, "{file}");
+        }
+    }
+
+    /// Confirming that box unchanged must leave the file exactly where it was.
+    #[test]
+    fn renaming_to_the_same_name_changes_nothing() {
+        let dir = TempDir::new("rename-noop");
+        let mut app = App::new(dir.0.clone());
+        let path = dir.0.join("notes.md.md");
+        fs::write(&path, "body").unwrap();
+
+        app.apply(Cmd::Rename(path.clone()));
+        let modal = app.modal.take().expect("modal");
+        app.confirm_modal(&modal);
+
+        assert!(path.is_file(), "the note must still be notes.md.md");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "body");
+    }
+
+    /// `create_dir_all` succeeded on a folder that was already there, so the
+    /// window reported nothing and looked like it had made one.
+    #[test]
+    fn making_a_folder_that_exists_says_so() {
+        let dir = TempDir::new("newfolder");
+        let mut app = App::new(dir.0.clone());
+        fs::create_dir(dir.0.join("Ideas")).unwrap();
+
+        let modal = Modal {
+            kind: ModalKind::NewFolder,
+            target: dir.0.clone(),
+            input: "Ideas".to_owned(),
+            focused: false,
+        };
+        app.confirm_modal(&modal);
+
+        assert!(app.status.contains("already exists"), "status: {}", app.status);
     }
 
     /// Our own writes move the timestamp too, and must not look like someone

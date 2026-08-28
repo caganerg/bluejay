@@ -4,6 +4,8 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 /// One entry in the sidebar tree. Directories carry their children; files don't.
@@ -21,9 +23,37 @@ impl Node {
         if self.is_dir {
             &self.name
         } else {
-            self.name.strip_suffix(".md").unwrap_or(&self.name)
+            note_stem(&self.name)
         }
     }
+}
+
+/// `name` without its `.md` extension, whatever case that was written in.
+///
+/// The one place the rule lives: the sidebar labels rows with it, the rename
+/// box is seeded from it, and `unique_dest` splits names on it, and all three
+/// have to agree on what counts as the extension.
+///
+/// Split at the dot rather than a fixed distance from the end — that distance
+/// can land inside a multi-byte character, where slicing panics. And
+/// `strip_suffix`, in effect, not `trim_end_matches`: the latter takes the
+/// suffix off as many times as it appears, turning "notes.md.md" into "notes"
+/// and quietly dropping one on the way back.
+pub fn note_stem(name: &str) -> &str {
+    match name.rfind('.') {
+        Some(dot) if name[dot..].eq_ignore_ascii_case(".md") => &name[..dot],
+        _ => name,
+    }
+}
+
+/// Whether the tree should show this file.
+///
+/// The extension is matched without regard to case: a note another program
+/// wrote as `.MD` is a note, and matching exactly made it invisible here —
+/// missing from the sidebar and from the wiki-link index both.
+fn is_note(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
 }
 
 /// Recursively read `root`, keeping only directories and `.md` files and
@@ -66,7 +96,7 @@ pub fn scan(root: &Path) -> Node {
         let path = entry.path();
         if file_type.is_dir() {
             node.children.push(scan(&path));
-        } else if file_type.is_file() && path.extension().is_some_and(|e| e == "md") {
+        } else if file_type.is_file() && is_note(&path) {
             node.children.push(Node {
                 path,
                 name,
@@ -103,18 +133,33 @@ fn config_file() -> Option<PathBuf> {
 }
 
 /// The last used vault path, if it still exists.
+///
+/// Only the line ending is trimmed. A general `trim` also eats the spaces a
+/// folder name is allowed to end with, and the vault would then silently fail
+/// to load and send the user back to the first-run picker.
 pub fn load_root() -> Option<PathBuf> {
-    let text = fs::read_to_string(config_file()?).ok()?;
-    let path = PathBuf::from(text.trim());
+    let path = decode_root(&fs::read(config_file()?).ok()?);
     (path.is_dir()).then_some(path)
 }
 
+/// The path a config file's bytes name: its first line, taken as it is.
+fn decode_root(bytes: &[u8]) -> PathBuf {
+    let line = bytes.split(|b| *b == b'\n').next().unwrap_or(bytes);
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    PathBuf::from(OsStr::from_bytes(line))
+}
+
+/// Remember `root` for the next launch.
+///
+/// Written as raw bytes rather than through `to_string_lossy`, which replaces
+/// anything that is not UTF-8 and hands back a path that no longer names the
+/// folder it came from.
 pub fn save_root(root: &Path) {
     if let Some(file) = config_file() {
         if let Some(parent) = file.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        let _ = fs::write(file, root.to_string_lossy().as_bytes());
+        let _ = fs::write(file, root.as_os_str().as_bytes());
     }
 }
 
@@ -185,11 +230,10 @@ pub fn unique_dest(dir: &Path, name: &str) -> PathBuf {
         return first;
     }
     // Folders are the only other thing the tree shows, and they carry no
-    // extension worth preserving.
-    let (stem, ext) = match name.strip_suffix(".md") {
-        Some(stem) => (stem, ".md"),
-        None => (name, ""),
-    };
+    // extension worth preserving. Slicing at the stem keeps the extension
+    // spelled the way it arrived, so a ".MD" file does not gain a ".md" twin.
+    let stem = note_stem(name);
+    let ext = &name[stem.len()..];
     let mut n: u32 = 2;
     loop {
         let candidate = dir.join(format!("{stem} ({n}){ext}"));
@@ -379,6 +423,69 @@ pub(crate) mod tests {
         let tree = scan(&dir.0);
         let names: Vec<&str> = tree.children.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["real.md"]);
+    }
+
+    #[test]
+    fn shows_notes_whatever_case_the_extension_is() {
+        let dir = TempDir::new("case");
+        fs::write(dir.0.join("lower.md"), "").unwrap();
+        fs::write(dir.0.join("Upper.MD"), "").unwrap();
+        fs::write(dir.0.join("mixed.Md"), "").unwrap();
+        fs::write(dir.0.join("notes.txt"), "").unwrap();
+
+        let tree = scan(&dir.0);
+        let mut stems: Vec<&str> = tree.children.iter().map(Node::stem).collect();
+        stems.sort_unstable();
+        assert_eq!(stems, ["Upper", "lower", "mixed"]);
+    }
+
+    /// The stem is cut at the dot, not at a fixed distance from the end, which
+    /// would slice through a multi-byte character.
+    #[test]
+    fn stems_multibyte_names_without_panicking() {
+        for (name, want) in [
+            ("çğü.md", "çğü"),
+            ("çğü", "çğü"),
+            ("é", "é"),
+            ("éé", "éé"),
+            ("notes.md.md", "notes.md"),
+        ] {
+            let node = Node {
+                path: PathBuf::from(name),
+                name: name.to_owned(),
+                is_dir: false,
+                children: Vec::new(),
+            };
+            assert_eq!(node.stem(), want, "{name:?}");
+        }
+    }
+
+    /// A folder name may end in a space, and `trim` used to eat it — the vault
+    /// then failed to load and the first-run picker came back with no
+    /// explanation.
+    #[test]
+    fn keeps_a_vault_path_exactly_as_written() {
+        for path in ["/home/x/notes", "/home/x/notes ", "/home/x/ notes ", "/tmp/a b"] {
+            let encoded = PathBuf::from(path);
+            assert_eq!(decode_root(encoded.as_os_str().as_bytes()), encoded);
+        }
+    }
+
+    #[test]
+    fn reads_only_the_first_line_of_the_config() {
+        assert_eq!(decode_root(b"/home/x/notes\n"), PathBuf::from("/home/x/notes"));
+        assert_eq!(decode_root(b"/home/x/notes\r\n"), PathBuf::from("/home/x/notes"));
+        assert_eq!(decode_root(b"/home/x/notes\nstray"), PathBuf::from("/home/x/notes"));
+    }
+
+    /// Paths are bytes on Unix. `to_string_lossy` would swap the invalid ones
+    /// for replacement characters and hand back a path naming nothing.
+    #[test]
+    fn survives_a_path_that_is_not_utf8() {
+        let raw = b"/home/x/no\xffte";
+        let decoded = decode_root(raw);
+        assert_eq!(decoded.as_os_str().as_bytes(), raw);
+        assert!(decoded.to_str().is_none(), "the test case has to be invalid UTF-8");
     }
 
     #[test]

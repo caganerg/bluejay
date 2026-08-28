@@ -7,8 +7,8 @@
 use std::sync::LazyLock;
 
 use eframe::egui::{
-    self, Color32, FontFamily, Rect, RichText, Shape, Stroke, TextStyle, TextWrapMode, Ui,
-    WidgetText, pos2,
+    self, Align, Color32, FontFamily, FontId, Rect, RichText, Shape, Stroke, TextFormat, TextStyle,
+    TextWrapMode, Ui, WidgetText, pos2, text::LayoutJob,
 };
 use pulldown_cmark::{Alignment, Event, Options, Parser, Tag, TagEnd};
 
@@ -84,6 +84,41 @@ fn rich(text: &str, style: &Style) -> RichText {
         t = t.strikethrough();
     }
     t
+}
+
+/// `rich` as a `TextFormat`, for the sections of a `LayoutJob`. The two have to
+/// agree: a table column is measured through `rich` and drawn through this.
+fn text_format(style: &Style) -> TextFormat {
+    let bold = style.strong || style.heading.is_some();
+    let color = if style.quote { MUTED } else { TEXT };
+    TextFormat {
+        font_id: FontId::new(
+            font_size(style),
+            if bold { SANS_BOLD.clone() } else { SANS.clone() },
+        ),
+        color,
+        italics: style.em,
+        strikethrough: if style.strike {
+            Stroke::new(1.0, color)
+        } else {
+            Stroke::NONE
+        },
+        // Sections of different sizes — inline code against body text — sit on
+        // a shared centre line rather than each on its own baseline.
+        valign: Align::Center,
+        ..Default::default()
+    }
+}
+
+/// `code_rich` as a `TextFormat`; see `text_format`.
+fn code_format() -> TextFormat {
+    TextFormat {
+        font_id: FontId::new(BODY_SIZE - 1.0, MONO.clone()),
+        color: CODE_FG,
+        background: CODE_BG,
+        valign: Align::Center,
+        ..Default::default()
+    }
 }
 
 fn code_rich(code: &str) -> RichText {
@@ -371,37 +406,55 @@ fn flush_block(
 
 /// Draw a run of inline content into the row the caller has already opened.
 ///
-/// `split_words` gives every word its own label so a wrapping layout can break
-/// between them. Table cells don't wrap and are measured as whole strings, so
-/// they pass `false` to keep the drawn width equal to the measured one.
-fn draw_inlines(ui: &mut Ui, inlines: &[Inline], split_words: bool, action: &mut Option<Action>) {
+/// Consecutive text and code are gathered into one `LayoutJob` and drawn as a
+/// single label, which is what keeps the preview cheap: it is rebuilt from the
+/// buffer every frame, and a widget per word cost ~30k of them — and ~38 ms —
+/// on a note of 800 paragraphs, against ~1 ms to parse the same note. Runs
+/// break only where something has to answer for itself: a wiki link is
+/// clickable and a markdown link carries a tooltip, so each of those is still a
+/// widget of its own.
+///
+/// `wrap` is false for table cells, which are measured as whole strings and
+/// must draw at the width they measured.
+fn draw_inlines(ui: &mut Ui, inlines: &[Inline], wrap: bool, action: &mut Option<Action>) {
+    let mut run = LayoutJob::default();
+
+    /// Draw whatever text has piled up, leaving the job empty again.
+    fn flush(ui: &mut Ui, run: &mut LayoutJob, wrap: bool) {
+        if run.is_empty() {
+            return;
+        }
+        let job = std::mem::take(run);
+        if wrap {
+            ui.label(job);
+        } else {
+            ui.add(egui::Label::new(job).extend());
+        }
+    }
+
     for inline in inlines {
         match inline {
-            Inline::Text(text, style) => {
-                if split_words {
-                    for word in text.split_inclusive(' ') {
-                        ui.label(rich(word, style));
-                    }
-                } else {
-                    ui.label(rich(text, style));
-                }
-            }
-            Inline::Code(code) => {
-                ui.label(code_rich(code));
-            }
+            Inline::Text(text, style) => run.append(text, 0.0, text_format(style)),
+            Inline::Code(code) => run.append(code, 0.0, code_format()),
             Inline::Link { text, url } => {
+                flush(ui, &mut run, wrap);
                 // The link text is written by the same hand as the destination,
                 // so it is the one thing that cannot be trusted to describe it.
                 ui.label(flat_link_rich(text)).on_hover_text(url);
             }
             Inline::Wiki(name) => {
+                flush(ui, &mut run, wrap);
                 if ui.link(link_rich(&format!("[[{name}]]"))).clicked() {
                     *action = Some(Action::OpenNote(name.clone()));
                 }
             }
-            Inline::Break => ui.end_row(),
+            Inline::Break => {
+                flush(ui, &mut run, wrap);
+                ui.end_row();
+            }
         }
     }
+    flush(ui, &mut run, wrap);
 }
 
 /// A table buffered while it is parsed.
