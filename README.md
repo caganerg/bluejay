@@ -140,7 +140,8 @@ with the tree, and asks the same question first if there is anything unsaved.
 
 | File | Contents |
 | --- | --- |
-| `src/main.rs` | window setup, dark theme, first-run folder picker |
+| `src/main.rs` | window setup, font families, first-run folder picker |
+| `src/theme.rs` | the fixed Adwaita-dark palette, spacing, and the UI typeface |
 | `src/app.rs` | the three panes, sidebar commands, modals, autosave |
 | `src/markdown.rs` | `pulldown-cmark` events → egui widgets, wiki-link scanning |
 | `src/vault.rs` | directory scan, note-name index, config file |

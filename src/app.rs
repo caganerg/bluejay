@@ -6,6 +6,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
+use eframe::egui::emath::GuiRounding as _;
 use eframe::egui::{self, Ui};
 
 use crate::markdown::{self, Action};
@@ -809,7 +810,12 @@ fn name_of(path: &Path) -> String {
 /// out, so a row that is skipped reserves exactly what drawing it would have
 /// taken. `note_rows_are_the_height_we_reserve` holds the two together.
 fn row_height(ui: &Ui) -> f32 {
-    let text = ui.text_style_height(&egui::TextStyle::Body);
+    // The row a galley is laid out on is rounded to whole pixels, so the text
+    // has to be rounded the same way before the padding is added — a fraction
+    // of a pixel per row is enough to drift a long vault out of place.
+    let text = ui
+        .text_style_height(&egui::TextStyle::Body)
+        .round_to_pixels(ui.pixels_per_point());
     (text + ui.spacing().button_padding.y * 2.0).max(ui.spacing().interact_size.y)
 }
 
@@ -1178,6 +1184,10 @@ mod tests {
     fn test_ctx() -> egui::Context {
         let ctx = egui::Context::default();
         crate::install_fonts(&ctx);
+        // The real style, not egui's: row height is worked out from the button
+        // padding, so the culling tests below have to measure under the padding
+        // the sidebar actually draws with.
+        crate::theme::apply_style(&ctx);
         ctx
     }
 

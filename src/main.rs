@@ -1,5 +1,6 @@
 mod app;
 mod markdown;
+mod theme;
 mod vault;
 
 use std::path::PathBuf;
@@ -46,7 +47,7 @@ fn main() -> ExitCode {
         options,
         Box::new(|cc| {
             install_fonts(&cc.egui_ctx);
-            set_dark_theme(&cc.egui_ctx);
+            theme::apply_style(&cc.egui_ctx);
             Ok(Box::new(Bluejay::new()))
         }),
     );
@@ -90,27 +91,34 @@ fn load_icon() -> Option<egui::IconData> {
 /// each pane has to name the family it wants; what they hold stays on the back
 /// of every new family as a fallback, which is what keeps the emoji fonts
 /// available for the glyphs the sidebar draws its icons with.
+///
+/// The desktop's own UI face, if it has one, goes in front of Inter rather than
+/// replacing it — see `theme::register_system_sans`.
 fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     let sans_fallback = fonts.families[&egui::FontFamily::Proportional].clone();
     let mono_fallback = fonts.families[&egui::FontFamily::Monospace].clone();
+    let (sans_head, sans_bold_head) = theme::register_system_sans(&mut fonts);
 
-    for (name, family, fallback, bytes) in [
+    for (name, family, head, fallback, bytes) in [
         (
             "JetBrainsMono-Regular",
             EDITOR_MONO,
+            &[][..],
             &mono_fallback,
             &include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf")[..],
         ),
         (
             "Inter-Regular",
             PREVIEW_SANS,
+            &sans_head[..],
             &sans_fallback,
             &include_bytes!("../assets/fonts/Inter-Regular.ttf")[..],
         ),
         (
             "Inter-Bold",
             PREVIEW_SANS_BOLD,
+            &sans_bold_head[..],
             &sans_fallback,
             &include_bytes!("../assets/fonts/Inter-Bold.ttf")[..],
         ),
@@ -119,7 +127,8 @@ fn install_fonts(ctx: &egui::Context) {
             name.to_owned(),
             std::sync::Arc::new(egui::FontData::from_static(bytes)),
         );
-        let mut chain = vec![name.to_owned()];
+        let mut chain = head.to_vec();
+        chain.push(name.to_owned());
         chain.extend(fallback.iter().cloned());
         fonts
             .families
@@ -127,32 +136,6 @@ fn install_fonts(ctx: &egui::Context) {
     }
 
     ctx.set_fonts(fonts);
-}
-
-fn set_dark_theme(ctx: &egui::Context) {
-    ctx.set_theme(egui::Theme::Dark);
-    let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = egui::Color32::from_rgb(0x1e, 0x1f, 0x22);
-    visuals.extreme_bg_color = egui::Color32::from_rgb(0x1a, 0x1b, 0x1e);
-    visuals.window_fill = egui::Color32::from_rgb(0x24, 0x26, 0x2a);
-    // Despite the name this no longer dresses anything that leaves the app: the
-    // only widget left using it is the `ui.link` a `[[wiki link]]` is drawn
-    // with, which takes its underline from here.
-    visuals.hyperlink_color = egui::Color32::from_rgb(0x7f, 0xa8, 0xf5);
-    ctx.set_visuals(visuals);
-
-    // The chrome — sidebar, buttons, modals, status bar — follows the preview's
-    // Inter so that the editor pane is the only monospaced thing on screen.
-    // Only the styles point at the new families; the built-in ones are untouched.
-    ctx.all_styles_mut(|style| {
-        for (text_style, font_id) in style.text_styles.iter_mut() {
-            font_id.family = egui::FontFamily::Name(match text_style {
-                egui::TextStyle::Monospace => EDITOR_MONO.into(),
-                egui::TextStyle::Heading => PREVIEW_SANS_BOLD.into(),
-                _ => PREVIEW_SANS.into(),
-            });
-        }
-    });
 }
 
 /// Either the first-run folder picker, or the note window once we have a vault.

@@ -12,19 +12,24 @@ use eframe::egui::{
 };
 use pulldown_cmark::{Alignment, Event, Options, Parser, Tag, TagEnd};
 
+use crate::theme;
+
 /// Something the reader clicked in the preview.
 pub enum Action {
     /// A `[[wiki link]]`: open the note with this name.
     OpenNote(String),
 }
 
-const TEXT: Color32 = Color32::from_rgb(0xdc, 0xdd, 0xde);
-const MUTED: Color32 = Color32::from_rgb(0x9a, 0x9d, 0xa2);
-const LINK: Color32 = Color32::from_rgb(0x7f, 0xa8, 0xf5);
-const CODE_FG: Color32 = Color32::from_rgb(0xe6, 0x9a, 0x9a);
-const CODE_BG: Color32 = Color32::from_rgb(0x25, 0x27, 0x2b);
-const HEAD_BG: Color32 = Color32::from_rgb(0x2b, 0x2e, 0x33);
-const RULE: Color32 = Color32::from_rgb(0x44, 0x47, 0x4d);
+// The preview is painted out of the window's own palette, under the names the
+// renderer calls those roles by: a table's header band is a raised surface, a
+// code block a sunken one, and a rule is the hairline `ui.separator` draws.
+const TEXT: Color32 = theme::TEXT;
+const MUTED: Color32 = theme::DIM_TEXT;
+const LINK: Color32 = theme::LINK;
+const CODE_FG: Color32 = theme::CODE_FG;
+const CODE_BG: Color32 = theme::VIEW_BG;
+const HEAD_BG: Color32 = theme::CONTROL_BG;
+const RULE: Color32 = theme::BORDER;
 const BODY_SIZE: f32 = 15.0;
 /// Horizontal gap between two table columns.
 const CELL_GAP: f32 = 18.0;
