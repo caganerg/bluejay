@@ -97,10 +97,17 @@ pub struct App {
 
 impl App {
     pub fn new(root: PathBuf) -> Self {
-        let mut app = Self {
-            tree: vault::scan(&root),
+        // Scanned once, not twice: `refresh` would do both halves of this, but
+        // it starts by walking the vault again, and on a large one that is the
+        // slower half of opening the window.
+        let tree = vault::scan(&root);
+        let mut index = HashMap::new();
+        vault::build_index(&tree, &mut index);
+
+        Self {
             root,
-            index: HashMap::new(),
+            tree,
+            index,
             open_path: None,
             buffer: String::new(),
             open_mtime: None,
@@ -109,9 +116,7 @@ impl App {
             modal: None,
             clipboard: None,
             status: String::new(),
-        };
-        app.refresh();
-        app
+        }
     }
 
     fn refresh(&mut self) {

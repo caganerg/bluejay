@@ -237,11 +237,46 @@ fn bold_instance(regular: &egui::FontData) -> Option<egui::FontData> {
 fn read_face(files: &BTreeMap<String, PathBuf>, stem: &str) -> Option<(String, Vec<u8>)> {
     let path = files.get(&stem.to_ascii_lowercase())?;
     let bytes = fs::read(path).ok()?;
-    // egui is handed the bytes without being asked whether it can parse them,
-    // so a file that is not a font is dropped here rather than deeper in.
+    is_parseable_sfnt(&bytes).then(|| (stem.to_owned(), bytes))
+}
+
+/// Does this look like a font file that will parse?
+///
+/// egui *panics* on a face it cannot read — `FontsImpl::new` unwraps the parse
+/// of every registered font — and unlike the two baked into the binary, what is
+/// read here came off someone's filesystem: a half-finished download or a
+/// truncated package would otherwise take the window down on the first frame
+/// that draws text. So the header is checked before the bytes are handed over.
+/// A file whose table directory runs past its own end is exactly what a
+/// truncated font looks like, and is what the parser refuses on.
+fn is_parseable_sfnt(bytes: &[u8]) -> bool {
+    // TrueType outlines, Apple's older spelling of the same, and CFF.
     let magic = bytes.get(..4);
-    let sfnt = matches!(magic, Some(b"\x00\x01\x00\x00" | b"true" | b"OTTO"));
-    sfnt.then(|| (stem.to_owned(), bytes))
+    if !matches!(magic, Some(b"\x00\x01\x00\x00" | b"true" | b"OTTO")) {
+        return false;
+    }
+
+    let Some(count) = bytes.get(4..6) else {
+        return false;
+    };
+    let count = usize::from(u16::from_be_bytes([count[0], count[1]]));
+    // A 12-byte header, then one 16-byte record per table: tag, checksum,
+    // offset, length.
+    let Some(records) = bytes.get(12..12 + count * 16) else {
+        return false;
+    };
+
+    records.chunks_exact(16).all(|record| {
+        // A record is tag, checksum, offset, length — one word each.
+        let word = |i: usize| {
+            let word = [record[i], record[i + 1], record[i + 2], record[i + 3]];
+            u32::from_be_bytes(word) as usize
+        };
+        let (offset, length) = (word(8), word(12));
+        offset
+            .checked_add(length)
+            .is_some_and(|end| end <= bytes.len())
+    })
 }
 
 /// Every `.ttf` and `.otf` on the system, by lower-cased file stem.
@@ -314,6 +349,22 @@ fn collect_fonts(dir: &Path, depth: usize, found: &mut BTreeMap<String, PathBuf>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// egui panics on a face it cannot parse, so a font that is not whole has
+    /// to be turned away before it is registered rather than after.
+    #[test]
+    fn a_font_that_is_not_whole_is_turned_away() {
+        let whole = &include_bytes!("../assets/fonts/Inter-Regular.ttf")[..];
+        assert!(is_parseable_sfnt(whole));
+
+        // What a half-finished download looks like: the header still says how
+        // many tables there are and where they start, and most of them are no
+        // longer there.
+        assert!(!is_parseable_sfnt(&whole[..whole.len() / 2]));
+        assert!(!is_parseable_sfnt(&whole[..8]));
+        assert!(!is_parseable_sfnt(b""));
+        assert!(!is_parseable_sfnt(b"this is a note, not a font"));
+    }
 
     /// Whatever this machine happens to have installed, every name handed back
     /// has to have font data behind it: a family chain naming a font that was
