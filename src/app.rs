@@ -35,6 +35,23 @@ enum Cmd {
     Paste(PathBuf),
 }
 
+/// What became of the buffer when `save_now` was asked to write it.
+///
+/// The two that are not `Done` are told apart because they end differently: the
+/// question has an answer on screen and is worth waiting for, while a write that
+/// failed has only said so in the status line, and holding the window hostage to
+/// a full disk would leave no way out of it.
+#[derive(Debug, PartialEq)]
+enum Save {
+    /// Written, or there was nothing to write.
+    Done,
+    /// The note changed underneath the buffer, and the question is now on
+    /// screen. Nothing should move until it is answered.
+    Asked,
+    /// The write itself failed, and said why in the status line.
+    Failed,
+}
+
 /// Which of the two the clipboard is holding a path for.
 #[derive(Clone, Copy, PartialEq)]
 enum ClipOp {
@@ -131,13 +148,19 @@ impl App {
     /// question instead: autosave fires on a timer and would otherwise write
     /// over whatever arrived — a sync, a `git pull`, an edit in another program
     /// — without anyone having asked it to.
-    fn save_now(&mut self) {
+    ///
+    /// What came of it is returned because most callers ask for this on the way
+    /// to somewhere else — another note, another vault, a rename — and a buffer
+    /// that was not written must not be left behind. Only `Save::Done` says it
+    /// is safe to move on.
+    #[must_use]
+    fn save_now(&mut self) -> Save {
         if !self.dirty {
-            return;
+            return Save::Done;
         }
         let Some(path) = self.open_path.clone() else {
             self.dirty = false;
-            return;
+            return Save::Done;
         };
         if mtime_of(&path) != self.open_mtime {
             // Ask once. Until it is answered the buffer stays dirty and this
@@ -145,7 +168,7 @@ impl App {
             if self.modal.is_none() {
                 self.modal = Some(Modal::new(ModalKind::Conflict, path));
             }
-            return;
+            return Save::Asked;
         }
         match vault::write_atomic(&path, &self.buffer) {
             Ok(()) => {
@@ -154,13 +177,24 @@ impl App {
                 // next save would mistake it for someone else's.
                 self.open_mtime = mtime_of(&path);
                 self.status = format!("Saved {}", name_of(&path));
+                Save::Done
             }
-            Err(err) => self.status = format!("Could not save {}: {err}", name_of(&path)),
+            Err(err) => {
+                self.status = format!("Could not save {}: {err}", name_of(&path));
+                Save::Failed
+            }
         }
     }
 
     fn open(&mut self, path: PathBuf) {
-        self.save_now();
+        // The buffer is about to be replaced, so it has to be on disk first.
+        // It used to be written "if it could be" and replaced either way, which
+        // meant that clicking another note while the open one was in conflict
+        // threw the edits away and left the question standing over a note that
+        // was no longer open — where answering it did nothing at all.
+        if self.save_now() != Save::Done {
+            return;
+        }
         // Read the timestamp first: a write landing between the two is then
         // newer than what we stored and gets noticed, where the other order
         // would file it under the copy we already hold.
@@ -237,7 +271,12 @@ impl App {
         if root == self.root {
             return;
         }
-        self.save_now();
+        // Everything below replaces the window's whole state, so an unwritten
+        // buffer would go with it — and unlike `open`, without even leaving the
+        // question behind.
+        if self.save_now() != Save::Done {
+            return;
+        }
         vault::save_root(&root);
         // Nothing survives the move: the open note, its buffer and the name
         // index all belong to the vault being left behind.
@@ -345,7 +384,9 @@ impl App {
             ClipOp::Cut => "move",
         };
         // The buffer belongs to a path that is about to move out from under it.
-        self.save_now();
+        if self.save_now() != Save::Done {
+            return;
+        }
         let result = match op {
             ClipOp::Copy => vault::copy_recursive(&src, &dest),
             ClipOp::Cut => fs::rename(&src, &dest),
@@ -448,7 +489,9 @@ impl App {
                     self.status = format!("{file} already exists");
                     return;
                 }
-                self.save_now();
+                if self.save_now() != Save::Done {
+                    return;
+                }
                 match fs::rename(&modal.target, &dest) {
                     Ok(()) => {
                         self.follow_move(&modal.target, &dest);
@@ -487,7 +530,8 @@ impl App {
             // and do it straight away rather than waiting for the next pause.
             ModalKind::Conflict => {
                 self.open_mtime = mtime_of(&modal.target);
-                self.save_now();
+                // This is the answer to the question, not another asking of it.
+                let _ = self.save_now();
             }
             // "Keep my version" on a reload asked for by hand: there is nothing
             // to do but leave the buffer alone.
@@ -766,7 +810,9 @@ impl eframe::App for App {
         // what is being asked.
         if self.modal.is_none() && ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S))
         {
-            self.save_now();
+            // Nothing follows this, so whatever came of it — written, asked
+            // about, or refused — is already on screen.
+            let _ = self.save_now();
         }
 
         self.sidebar(ui);
@@ -786,14 +832,18 @@ impl eframe::App for App {
         if self.dirty {
             let idle = self.last_edit.elapsed();
             if idle >= AUTOSAVE_DELAY {
-                self.save_now();
+                let _ = self.save_now();
             } else {
                 ctx.request_repaint_after(AUTOSAVE_DELAY - idle);
             }
         }
 
-        if ctx.input(|i| i.viewport().close_requested()) {
-            self.save_now();
+        // The last chance to write, and the one place a raised question has to
+        // hold the window open: closing over it would take the buffer and the
+        // question both. A write that merely failed is let through — a window
+        // that cannot be closed while a disk is full is worse than the loss.
+        if ctx.input(|i| i.viewport().close_requested()) && self.save_now() == Save::Asked {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
     }
 }
@@ -959,7 +1009,7 @@ mod tests {
         fs::write(&path, "theirs").unwrap();
         touch_later(&path);
 
-        app.save_now();
+        assert_eq!(app.save_now(), Save::Asked);
 
         assert_eq!(fs::read_to_string(&path).unwrap(), "theirs");
         assert!(app.dirty, "the edits are still unsaved, not lost");
@@ -984,7 +1034,7 @@ mod tests {
         touch_later(&path);
 
         for _ in 0..3 {
-            app.save_now();
+            assert_eq!(app.save_now(), Save::Asked);
             // What `modal_ui` does with a modal nobody answered: draws it and
             // puts it back.
             let modal = app.modal.take().expect("still asking");
@@ -1007,7 +1057,7 @@ mod tests {
         app.dirty = true;
         fs::write(&path, "theirs").unwrap();
         touch_later(&path);
-        app.save_now();
+        assert_eq!(app.save_now(), Save::Asked);
 
         let modal = app.modal.take().expect("conflict raised");
         app.confirm_modal(&modal);
@@ -1036,9 +1086,67 @@ mod tests {
         // And the adopted timestamp lets the next edit save without asking.
         app.buffer = "mine again".to_owned();
         app.dirty = true;
-        app.save_now();
+        assert_eq!(app.save_now(), Save::Done);
         assert_eq!(fs::read_to_string(&path).unwrap(), "mine again");
         assert!(app.modal.is_none());
+    }
+
+    /// The edits are what the conflict question is there to protect, so nothing
+    /// may walk off with them while it is still on screen. Clicking another
+    /// note used to: the buffer was replaced, `dirty` cleared, and the question
+    /// left standing over a note that was no longer open — where answering it
+    /// did nothing at all.
+    #[test]
+    fn a_pending_conflict_holds_the_open_note() {
+        let dir = TempDir::new("conflict_open");
+        let mut app = App::new(dir.0.clone());
+        let path = with_note(&mut app, &dir, "original");
+        let other = dir.0.join("other.md");
+        fs::write(&other, "another note").unwrap();
+        app.refresh();
+
+        app.buffer = "mine".to_owned();
+        app.dirty = true;
+        fs::write(&path, "theirs").unwrap();
+        touch_later(&path);
+
+        app.apply(Cmd::Open(other.clone()));
+
+        assert_eq!(app.buffer, "mine", "the edits are still here");
+        assert!(app.dirty);
+        assert_eq!(app.open_path.as_deref(), Some(path.as_path()));
+        assert!(
+            matches!(app.modal.as_ref().map(|m| &m.kind), Some(ModalKind::Conflict)),
+            "and the question is about the note they belong to"
+        );
+
+        // Answering it lets the same click through.
+        let modal = app.modal.take().expect("conflict raised");
+        app.confirm_modal(&modal);
+        app.apply(Cmd::Open(other.clone()));
+        assert_eq!(app.open_path.as_deref(), Some(other.as_path()));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "mine");
+    }
+
+    /// The same rule where there is not even a question left behind: switching
+    /// vaults replaces the whole window, modal and all.
+    #[test]
+    fn a_pending_conflict_holds_the_vault() {
+        let dir = TempDir::new("conflict_vault");
+        let elsewhere = TempDir::new("conflict_vault_other");
+        let mut app = App::new(dir.0.clone());
+        let path = with_note(&mut app, &dir, "original");
+
+        app.buffer = "mine".to_owned();
+        app.dirty = true;
+        fs::write(&path, "theirs").unwrap();
+        touch_later(&path);
+
+        app.set_root(elsewhere.0.clone());
+
+        assert_eq!(app.root, dir.0, "the vault cannot change out from under it");
+        assert_eq!(app.buffer, "mine");
+        assert!(app.dirty);
     }
 
     /// The button says "reload from disk"; with nothing unsaved it should just
@@ -1137,7 +1245,7 @@ mod tests {
         // And the next save lands on the note where it now is.
         app.buffer = "edited".to_owned();
         app.dirty = true;
-        app.save_now();
+        assert_eq!(app.save_now(), Save::Done);
         assert_eq!(fs::read_to_string(&moved).unwrap(), "edited");
         assert!(app.modal.is_none(), "a move of our own is not a conflict");
     }
@@ -1163,7 +1271,7 @@ mod tests {
 
         app.buffer = "edited".to_owned();
         app.dirty = true;
-        app.save_now();
+        assert_eq!(app.save_now(), Save::Done);
         assert_eq!(fs::read_to_string(&moved).unwrap(), "edited");
     }
 
@@ -1284,7 +1392,7 @@ mod tests {
         for n in 0..5 {
             app.buffer = format!("edit {n}");
             app.dirty = true;
-            app.save_now();
+            assert_eq!(app.save_now(), Save::Done);
             assert!(app.modal.is_none(), "own write mistaken for someone else's");
         }
         assert_eq!(fs::read_to_string(&path).unwrap(), "edit 4");

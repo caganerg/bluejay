@@ -109,22 +109,45 @@ pub fn scan(root: &Path) -> Node {
     node.children.sort_by(|a, b| {
         b.is_dir
             .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| lowered(&a.name).cmp(lowered(&b.name)))
     });
     node
 }
 
+/// A name lower-cased as it is read, for ordering the sidebar.
+///
+/// `to_lowercase` would answer the same, but it answers with a new `String`,
+/// and this is asked on every comparison of every sort — of which there is one
+/// per folder after every rename, paste and new note.
+fn lowered(name: &str) -> impl Iterator<Item = char> + '_ {
+    name.chars().flat_map(char::to_lowercase)
+}
+
 /// Map lowercased file stem -> path, for resolving `[[Note Name]]` anywhere in
-/// the vault. First match wins, and the tree is sorted, so it is stable.
+/// the vault.
+///
+/// Walked a level at a time rather than one branch at a time, so that the
+/// nearest of two notes with the same name wins: depth-first indexed everything
+/// inside the first folder before the notes sitting beside it, which made
+/// `[[Foo]]` open a copy buried in a subfolder while one at the top of the
+/// vault went unseen. Within a level the tree is already sorted, so which of
+/// two equally near notes wins is at least stable.
 pub fn build_index(node: &Node, index: &mut HashMap<String, PathBuf>) {
-    for child in &node.children {
-        if child.is_dir {
-            build_index(child, index);
-        } else {
-            index
-                .entry(child.stem().to_lowercase())
-                .or_insert_with(|| child.path.clone());
+    let mut level = vec![node];
+    while !level.is_empty() {
+        let mut below = Vec::new();
+        for node in level {
+            for child in &node.children {
+                if child.is_dir {
+                    below.push(child);
+                } else {
+                    index
+                        .entry(child.stem().to_lowercase())
+                        .or_insert_with(|| child.path.clone());
+                }
+            }
         }
+        level = below;
     }
 }
 
@@ -338,6 +361,28 @@ pub(crate) mod tests {
     /// level until the walk ran out of time, on the thread drawing the window.
     /// The kernel's own symlink limit does not help: it bounds the depth of a
     /// single path, not how many paths there are.
+    /// Two notes of the same name: `[[Foo]]` has to find the one nearest the
+    /// top of the vault, not whichever branch the walk happened to enter first.
+    #[test]
+    fn the_nearest_note_of_a_name_wins() {
+        let dir = TempDir::new("index_depth");
+        fs::create_dir(dir.0.join("Archive")).unwrap();
+        fs::create_dir(dir.0.join("Archive").join("Older")).unwrap();
+        fs::write(dir.0.join("Archive").join("Older").join("Foo.md"), "deep").unwrap();
+        fs::write(dir.0.join("Archive").join("Bar.md"), "one down").unwrap();
+        fs::write(dir.0.join("Foo.md"), "at the top").unwrap();
+
+        let mut index = HashMap::new();
+        build_index(&scan(&dir.0), &mut index);
+
+        assert_eq!(index.get("foo"), Some(&dir.0.join("Foo.md")));
+        // And a name that only exists deeper is still found.
+        assert_eq!(
+            index.get("bar"),
+            Some(&dir.0.join("Archive").join("Bar.md"))
+        );
+    }
+
     #[test]
     fn a_symlink_loop_does_not_explode() {
         let dir = TempDir::new("loop");

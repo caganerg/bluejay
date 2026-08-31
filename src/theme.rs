@@ -216,7 +216,7 @@ fn bold_instance(regular: &egui::FontData) -> Option<egui::FontData> {
     let weight = regular
         .variation_axes()
         .into_iter()
-        .find(|axis| axis.tag.to_string() == "wght")?;
+        .find(|axis| axis.tag == "wght")?;
     if weight.range.max < 600.0 {
         return None;
     }
@@ -240,15 +240,23 @@ fn read_face(files: &BTreeMap<String, PathBuf>, stem: &str) -> Option<(String, V
     is_parseable_sfnt(&bytes).then(|| (stem.to_owned(), bytes))
 }
 
-/// Does this look like a font file that will parse?
+/// Is this a font file whole enough to hand to egui?
 ///
-/// egui *panics* on a face it cannot read — `FontsImpl::new` unwraps the parse
-/// of every registered font — and unlike the two baked into the binary, what is
-/// read here came off someone's filesystem: a half-finished download or a
-/// truncated package would otherwise take the window down on the first frame
-/// that draws text. So the header is checked before the bytes are handed over.
-/// A file whose table directory runs past its own end is exactly what a
-/// truncated font looks like, and is what the parser refuses on.
+/// Unlike the two baked into the binary, this one came off someone's
+/// filesystem, and egui takes what it is given: a face it cannot parse at all
+/// panics on the spot (`FontsImpl::new` unwraps every registered font), and one
+/// that parses but is missing the tables its metrics come from panics later,
+/// when text is first laid out with it — a half-truncated font asserts `Bad
+/// px_scale_factor: inf`, and in a release build, where that assertion is
+/// compiled out, it draws with a scale that is not a number.
+///
+/// Both are the same file: a header still describing tables that are no longer
+/// there. So the table directory is checked before the bytes are handed over.
+/// This is deliberately stricter than the parser, which resolves a record it
+/// cannot reach to nothing rather than refusing the font — a face that declares
+/// one over-long table would render, and is turned away here. That trade is on
+/// purpose: what is lost is the system typeface, quietly falling back to Inter,
+/// and what is avoided is the window going down with it.
 fn is_parseable_sfnt(bytes: &[u8]) -> bool {
     // TrueType outlines, Apple's older spelling of the same, and CFF.
     let magic = bytes.get(..4);
@@ -350,8 +358,8 @@ fn collect_fonts(dir: &Path, depth: usize, found: &mut BTreeMap<String, PathBuf>
 mod tests {
     use super::*;
 
-    /// egui panics on a face it cannot parse, so a font that is not whole has
-    /// to be turned away before it is registered rather than after.
+    /// A font that is not whole has to be turned away before it is registered:
+    /// egui draws with what it is given, and half of a font is not a font.
     #[test]
     fn a_font_that_is_not_whole_is_turned_away() {
         let whole = &include_bytes!("../assets/fonts/Inter-Regular.ttf")[..];
