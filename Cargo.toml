@@ -28,3 +28,15 @@ winit = { version = "0.30.13", default-features = false, features = [
     "wayland-csd-adwaita",
     "wayland-dlopen",
 ] }
+
+[profile.release]
+# Panic without the unwinding machinery. Nothing here relies on it: eframe does
+# not catch a panic, so the window is lost either way, and the one thing a
+# rewind would still do — run `Drop` on the way out — is not what any cleanup in
+# this app is built on. `write_atomic` removes its scratch file by hand, and the
+# only `Drop` written anywhere is the tests' scratch directory, which is built
+# under the dev profile and so keeps its unwinding. The panic message and, with
+# `RUST_BACKTRACE`, the backtrace are still printed. It takes 3.1 MB off the
+# binary; it does not take `libgcc_s` off the link, because the backtrace still
+# reaches for it.
+panic = "abort"
