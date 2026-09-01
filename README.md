@@ -140,12 +140,19 @@ with the tree, and asks the same question first if there is anything unsaved.
 
 | File | Contents |
 | --- | --- |
-| `src/main.rs` | window setup, font families, first-run folder picker |
-| `src/theme.rs` | the fixed Adwaita-dark palette, spacing, and the UI typeface |
+| `src/main.rs` | window setup, the embedded typefaces, first-run folder picker |
+| `src/theme.rs` | the fixed Adwaita-dark palette and the spacing that goes with it |
 | `src/app.rs` | the three panes, sidebar commands, modals, autosave |
 | `src/markdown.rs` | `pulldown-cmark` events → egui widgets, wiki-link scanning |
 | `src/vault.rs` | directory scan, note-name index, config file |
 | `assets/` | the two typefaces, the logo, and the desktop entry |
+
+Both typefaces are carried in the binary and nothing is read from the system's
+font directories, so the window is the same on every machine: Adwaita Sans for
+the chrome and the preview — GNOME's build of Inter, whose lowercase `l` has a
+tail so it cannot be read as `I` or `1` — and JetBrains Mono for the editor. The
+sans is one variable file used at two weights. Both are SIL OFL; the licences
+are beside them in `assets/fonts/`.
 
 Four dependencies: `eframe`, `pulldown-cmark`, `rfd`, and a direct `winit` pin
 that exists only to select Wayland features — see below. The config file's
