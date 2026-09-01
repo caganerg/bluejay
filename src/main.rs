@@ -1,5 +1,6 @@
 mod app;
 mod markdown;
+mod picker;
 mod theme;
 mod vault;
 
@@ -170,7 +171,7 @@ fn install_fonts(ctx: &egui::Context) {
 
 /// Either the first-run folder picker, or the note window once we have a vault.
 enum Bluejay {
-    Setup { error: Option<String> },
+    Setup { picker: picker::Picker },
     Ready(Box<app::App>),
 }
 
@@ -178,7 +179,9 @@ impl Bluejay {
     fn new() -> Self {
         match vault::load_root() {
             Some(root) => Self::Ready(Box::new(app::App::new(root))),
-            None => Self::Setup { error: None },
+            None => Self::Setup {
+                picker: picker::Picker::new(None),
+            },
         }
     }
 }
@@ -188,25 +191,20 @@ impl eframe::App for Bluejay {
         let mut chosen: Option<PathBuf> = None;
 
         match self {
-            Bluejay::Setup { error } => {
+            Bluejay::Setup { picker } => {
                 egui::CentralPanel::default().show(ui, |ui| {
                     ui.vertical_centered(|ui| {
-                        ui.add_space(ui.available_height() * 0.3);
+                        ui.add_space(28.0);
                         ui.heading("bluejay");
                         ui.add_space(8.0);
                         ui.label("Pick the folder your .md notes live in.");
-                        ui.add_space(16.0);
-                        if ui.button("Choose folder…").clicked() {
-                            match rfd::FileDialog::new().pick_folder() {
-                                Some(path) => chosen = Some(path),
-                                None => *error = Some("No folder chosen.".to_owned()),
-                            }
-                        }
-                        if let Some(error) = error {
-                            ui.add_space(12.0);
-                            ui.colored_label(egui::Color32::from_rgb(0xe0, 0x8a, 0x8a), error.as_str());
-                        }
                     });
+                    ui.add_space(20.0);
+                    // Nothing to cancel back to: the window has no other state
+                    // until a vault has been chosen.
+                    if let picker::Outcome::Chosen(path) = picker.ui(ui, false) {
+                        chosen = Some(path);
+                    }
                 });
             }
             Bluejay::Ready(app) => eframe::App::ui(app.as_mut(), ui, frame),

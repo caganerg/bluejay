@@ -10,6 +10,7 @@ use eframe::egui::emath::GuiRounding as _;
 use eframe::egui::{self, Ui};
 
 use crate::markdown::{self, Action};
+use crate::picker::{self, Picker};
 use crate::vault::{self, Node};
 
 /// How long editing has to pause before the note is written to disk.
@@ -109,6 +110,9 @@ pub struct App {
     /// The one item “Copy” or “Cut” put aside, if any. Internal to the window:
     /// nothing is handed to the system clipboard.
     clipboard: Option<(PathBuf, ClipOp)>,
+    /// The folder picker, while one is open. Held apart from `modal` because it
+    /// carries where it has been browsed to.
+    picker: Option<Picker>,
     status: String,
 }
 
@@ -132,6 +136,7 @@ impl App {
             last_edit: Instant::now(),
             modal: None,
             clipboard: None,
+            picker: None,
             status: String::new(),
         }
     }
@@ -317,17 +322,10 @@ impl App {
                     None => {}
                 }
             }
-            Cmd::ChangeRoot => {
-                // The dialog blocks the frame it is opened from, same as the
-                // one on the first-run screen. There is nothing to draw
-                // underneath it in the meantime.
-                if let Some(root) = rfd::FileDialog::new()
-                    .set_directory(&self.root)
-                    .pick_folder()
-                {
-                    self.set_root(root);
-                }
-            }
+            // Opened here rather than answered here: the picker is drawn over
+            // the window for as many frames as the browsing takes, where the
+            // dialog it replaced blocked the frame it was opened from.
+            Cmd::ChangeRoot => self.picker = Some(Picker::new(Some(&self.root))),
             Cmd::NewNote(parent) => self.modal = Some(Modal::new(ModalKind::NewNote, parent)),
             Cmd::NewFolder(parent) => self.modal = Some(Modal::new(ModalKind::NewFolder, parent)),
             Cmd::Rename(path) => {
@@ -688,6 +686,36 @@ impl App {
         });
     }
 
+    /// Draw the folder picker, if one is open, and act on what it comes to.
+    fn picker_ui(&mut self, ctx: &egui::Context) {
+        let Some(mut picker) = self.picker.take() else {
+            return;
+        };
+
+        let mut outcome = picker::Outcome::Browsing;
+        let response = egui::Modal::new(egui::Id::new("bluejay_picker")).show(ctx, |ui| {
+            ui.set_min_width(380.0);
+            ui.label(
+                egui::RichText::new("Open a different folder")
+                    .family(egui::FontFamily::Name(crate::PREVIEW_SANS_BOLD.into()))
+                    .size(15.0),
+            );
+            ui.add_space(10.0);
+            outcome = picker.ui(ui, true);
+        });
+
+        match outcome {
+            // `set_root` is what refuses the move while the buffer is unwritten,
+            // and raises the question that says why.
+            picker::Outcome::Chosen(root) => self.set_root(root),
+            picker::Outcome::Cancelled => {}
+            // Escape and a click on the backdrop dismiss it too. Nothing has
+            // been changed yet, so there is nothing to ask about first.
+            picker::Outcome::Browsing if response.should_close() => {}
+            picker::Outcome::Browsing => self.picker = Some(picker),
+        }
+    }
+
     fn modal_ui(&mut self, ctx: &egui::Context) {
         let Some(mut modal) = self.modal.take() else {
             return;
@@ -827,6 +855,7 @@ impl eframe::App for App {
 
         self.editor(ui);
         self.modal_ui(&ctx);
+        self.picker_ui(&ctx);
 
         // Autosave once editing has been quiet for a moment.
         if self.dirty {

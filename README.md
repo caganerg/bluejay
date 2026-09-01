@@ -25,8 +25,11 @@ compositor to connect to, it exits with an error rather than opening a window.
 
 - **a running Wayland compositor** (Sway, GNOME, KDE Plasma, Hyprland, …)
 - a Rust toolchain
-- GTK 3 development files, used by the folder picker on first launch
-  (`gtk3-devel` / `libgtk-3-dev`)
+
+Nothing else. The built binary links `libc`, `libgcc_s` and `libm` and no other
+shared library; Wayland itself is opened by name at runtime. There is no GTK, no
+Pango, no Cairo, no fontconfig and no FreeType, because every window bluejay
+shows is one it draws itself out of its own typefaces.
 
 ## Build and run
 
@@ -140,11 +143,12 @@ with the tree, and asks the same question first if there is anything unsaved.
 
 | File | Contents |
 | --- | --- |
-| `src/main.rs` | window setup, the embedded typefaces, first-run folder picker |
+| `src/main.rs` | window setup, the embedded typefaces, the first-run screen |
 | `src/theme.rs` | the fixed Adwaita-dark palette and the spacing that goes with it |
 | `src/app.rs` | the three panes, sidebar commands, modals, autosave |
 | `src/markdown.rs` | `pulldown-cmark` events → egui widgets, wiki-link scanning |
 | `src/vault.rs` | directory scan, note-name index, config file |
+| `src/picker.rs` | the folder picker, for first launch and for changing vaults |
 | `assets/` | the two typefaces, the logo, and the desktop entry |
 
 Both typefaces are carried in the binary and nothing is read from the system's
@@ -154,8 +158,11 @@ tail so it cannot be read as `I` or `1` — and JetBrains Mono for the editor. T
 sans is one variable file used at two weights. Both are SIL OFL; the licences
 are beside them in `assets/fonts/`.
 
-Four dependencies: `eframe`, `pulldown-cmark`, `rfd`, and a direct `winit` pin
-that exists only to select Wayland features — see below. The config file's
+Three dependencies: `eframe`, `pulldown-cmark`, and a direct `winit` pin that
+exists only to select Wayland features — see below. Choosing a vault is drawn by
+`picker.rs` rather than handed to a system file dialog, which is what keeps that
+window in this theme and this font, and keeps GTK and the five libraries behind
+it off the binary. The config file's
 location is the base directory specification's one rule — `$XDG_CONFIG_HOME`,
 or `~/.config` when it is unset — which `std` already answers, so `dirs` and the
 two crates behind it are not carried for it.
