@@ -22,10 +22,21 @@ pulldown-cmark = { version = "0.13.4", default-features = false }
 # without this the build would lose client-side decorations and dlopen'd
 # libwayland along with x11. Cargo unions features, so naming winit directly
 # restores those two without re-enabling x11.
+#
+# The decorations are asked for in their "notitle" spelling, which draws the
+# titlebar and its buttons but no title text. The titled one renders that text
+# itself, and to know what to render it in it shells out to `gsettings` for
+# GNOME's titlebar-font setting and then to `fc-match` to turn that name into a
+# file, memory-maps whatever comes back, and falls back to a Cantarell of its
+# own when either step fails. That is a font off the machine, chosen by two
+# subprocesses at every launch — the one surface left that would have looked
+# different on every desktop, after the app's own two typefaces were baked in.
+# Without the font features, `sctk-adwaita` compiles its config and font lookup
+# out altogether, so the cost of this is the word "bluejay" in the titlebar.
 winit = { version = "0.30.13", default-features = false, features = [
     "rwh_06",
     "wayland",
-    "wayland-csd-adwaita",
+    "wayland-csd-adwaita-notitle",
     "wayland-dlopen",
 ] }
 
@@ -40,3 +51,14 @@ winit = { version = "0.30.13", default-features = false, features = [
 # binary; it does not take `libgcc_s` off the link, because the backtrace still
 # reaches for it.
 panic = "abort"
+
+# The symbol table is 3.8 MB of the binary and nothing reads it: a panic prints
+# its message and, with `RUST_BACKTRACE`, a backtrace, and neither needs these.
+strip = true
+# Optimise across crate boundaries rather than each on its own. egui, wgpu and
+# winit are the bulk of the binary and are called through generics, which is the
+# case this helps most; one codegen unit is what lets it see the whole of them.
+# Together they take the release build from about a minute and a half to about
+# two and a half, which is a debug build's business and this is not one.
+lto = "fat"
+codegen-units = 1

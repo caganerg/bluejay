@@ -175,11 +175,21 @@ obvious than they look:
 
 - **The direct `winit` dependency is never used from code.** eframe's `wayland`
   feature only reaches `winit/wayland`, and dropping `winit/default` would take
-  `wayland-csd-adwaita` (client-side window decorations, needed for a titlebar
-  on compositors that expect the client to draw one) and `wayland-dlopen`
-  (loading libwayland at runtime instead of link time) with it. Cargo unions
-  features across the graph, so naming winit directly restores those two without
-  bringing `x11` back.
+  `wayland-csd-adwaita-notitle` (client-side window decorations, needed for a
+  titlebar on compositors that expect the client to draw one) and
+  `wayland-dlopen` (loading libwayland at runtime instead of link time) with it.
+  Cargo unions features across the graph, so naming winit directly restores
+  those two without bringing `x11` back.
+
+  The decorations are asked for in their **`-notitle`** spelling, which draws
+  the titlebar and its buttons but no title text. The titled one renders that
+  text itself, and to know what to render it in it runs `gsettings` for GNOME's
+  titlebar-font setting and then `fc-match` to turn that name into a file — a
+  font off the machine, chosen by two subprocesses at every launch, and the last
+  thing that would still have looked different on every desktop. Its colour does
+  not vary: egui keeps the native decorations in step with its own theme, which
+  is pinned dark. The one thing left following the desktop is which side the
+  window buttons sit on, which is a convention worth following.
 - **`links` is off, and that is what removes URL opening.** It is the feature
   that wires egui's open-url command to `webbrowser`, which hands the URL to
   `xdg-open` on Linux. Nothing in the preview opens one any more, so the feature
