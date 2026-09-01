@@ -74,26 +74,14 @@ fn font_size(style: &Style) -> f32 {
     }
 }
 
-fn rich(text: &str, style: &Style) -> RichText {
+/// One run of text as a `TextFormat`, for the sections of a `LayoutJob`.
+///
+/// The only spelling of the decision. A table column is measured through the
+/// same format it is drawn with — see `inline_width` — so there is no second
+/// copy of this to keep in step by hand.
+fn text_format(style: &Style) -> TextFormat {
     // Headings are the body face at a larger size and in the bold weight; only
     // those two things separate h1 from h6 from a paragraph.
-    let bold = style.strong || style.heading.is_some();
-    let mut t = RichText::new(text)
-        .family(if bold { SANS_BOLD.clone() } else { SANS.clone() })
-        .size(font_size(style))
-        .color(if style.quote { MUTED } else { TEXT });
-    if style.em {
-        t = t.italics();
-    }
-    if style.strike {
-        t = t.strikethrough();
-    }
-    t
-}
-
-/// `rich` as a `TextFormat`, for the sections of a `LayoutJob`. The two have to
-/// agree: a table column is measured through `rich` and drawn through this.
-fn text_format(style: &Style) -> TextFormat {
     let bold = style.strong || style.heading.is_some();
     let color = if style.quote { MUTED } else { TEXT };
     TextFormat {
@@ -115,7 +103,7 @@ fn text_format(style: &Style) -> TextFormat {
     }
 }
 
-/// `code_rich` as a `TextFormat`; see `text_format`.
+/// Inline code as a `TextFormat`; see `text_format`.
 fn code_format() -> TextFormat {
     TextFormat {
         font_id: FontId::new(BODY_SIZE - 1.0, MONO.clone()),
@@ -126,36 +114,23 @@ fn code_format() -> TextFormat {
     }
 }
 
-fn code_rich(code: &str) -> RichText {
-    RichText::new(code)
-        .family(MONO.clone())
-        .size(BODY_SIZE - 1.0)
-        .color(CODE_FG)
-        .background_color(CODE_BG)
-}
-
-/// A `[[wiki link]]`, the one thing in the preview that is still clickable —
-/// it opens another note in this window and never leaves the app.
-fn link_rich(text: &str) -> RichText {
-    RichText::new(text)
-        .family(SANS.clone())
-        .size(BODY_SIZE)
-        .color(LINK)
-}
-
-/// A `[text](url)` link, which the preview shows but never follows.
+/// A link in the preview, in the colour that says what it does.
 ///
-/// Muted rather than blue, because nothing happens when it is clicked: opening
-/// one meant handing its URL to the system, which starts whatever application
-/// registered the scheme, and a note is a file like any other — synced in,
-/// cloned, downloaded. The destination is on hover, and the raw markdown is in
-/// the editor pane beside it. Same family and size as `link_rich`, so a table
-/// cell measures the same either way.
-fn flat_link_rich(text: &str) -> RichText {
+/// `LINK` is a `[[wiki link]]`, the one thing here that is still clickable — it
+/// opens another note in this window and never leaves the app. `MUTED` is a
+/// `[text](url)`, which the preview shows but never follows: opening one meant
+/// handing its URL to the system, which starts whatever application registered
+/// the scheme, and a note is a file like any other — synced in, cloned,
+/// downloaded. Its destination is on hover, and the raw markdown is in the
+/// editor pane beside it.
+///
+/// One function for both, rather than two that differ only in that colour, so
+/// that a table cell holding either kind measures the same way.
+fn link_rich(text: &str, color: Color32) -> RichText {
     RichText::new(text)
         .family(SANS.clone())
         .size(BODY_SIZE)
-        .color(MUTED)
+        .color(color)
 }
 
 /// The parser extensions the renderer knows how to draw.
@@ -459,11 +434,11 @@ fn draw_inlines(ui: &mut Ui, inlines: &[Inline], wrap: bool, action: &mut Option
                 flush(ui, &mut run, wrap);
                 // The link text is written by the same hand as the destination,
                 // so it is the one thing that cannot be trusted to describe it.
-                ui.label(flat_link_rich(text)).on_hover_text(url);
+                ui.label(link_rich(text, MUTED)).on_hover_text(url);
             }
             Inline::Wiki(name) => {
                 flush(ui, &mut run, wrap);
-                if ui.link(link_rich(&format!("[[{name}]]"))).clicked() {
+                if ui.link(link_rich(&format!("[[{name}]]"), LINK)).clicked() {
                     *action = Some(Action::OpenNote(name.clone()));
                 }
             }
@@ -489,13 +464,25 @@ struct Table {
     row: Vec<Vec<Inline>>,
 }
 
+/// One inline's text as the single-section job it would be drawn inside.
+fn one_section(text: &str, format: TextFormat) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    job.append(text, 0.0, format);
+    job
+}
+
 /// Width one inline will take up, asking for the same galley the label will use.
+///
+/// Every arm measures through the very thing `draw_inlines` draws with: a
+/// section of the run's `LayoutJob`, or the `RichText` a link gets its own
+/// widget for. A column measured by one rule and drawn by another would put a
+/// table's alignment padding somewhere the text is not.
 fn inline_width(ui: &Ui, inline: &Inline) -> f32 {
     let text: WidgetText = match inline {
-        Inline::Text(text, style) => rich(text, style).into(),
-        Inline::Code(code) => code_rich(code).into(),
-        Inline::Link { text, .. } => flat_link_rich(text).into(),
-        Inline::Wiki(name) => link_rich(&format!("[[{name}]]")).into(),
+        Inline::Text(text, style) => one_section(text, text_format(style)).into(),
+        Inline::Code(code) => one_section(code, code_format()).into(),
+        Inline::Link { text, .. } => link_rich(text, MUTED).into(),
+        Inline::Wiki(name) => link_rich(&format!("[[{name}]]"), LINK).into(),
         Inline::Break => return 0.0,
     };
     text.into_galley(ui, Some(TextWrapMode::Extend), f32::INFINITY, TextStyle::Body)

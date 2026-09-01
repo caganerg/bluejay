@@ -916,28 +916,9 @@ fn tree_ui(
                     ui.close();
                 }
                 ui.separator();
-                if ui.button("Copy").clicked() {
-                    cmds.push(Cmd::Copy(child.path.clone()));
-                    ui.close();
-                }
-                if ui.button("Cut").clicked() {
-                    cmds.push(Cmd::Cut(child.path.clone()));
-                    ui.close();
-                }
-                // Only folders take a paste, and only with something waiting.
-                if can_paste && ui.button("Paste").clicked() {
-                    cmds.push(Cmd::Paste(child.path.clone()));
-                    ui.close();
-                }
-                ui.separator();
-                if ui.button("Rename").clicked() {
-                    cmds.push(Cmd::Rename(child.path.clone()));
-                    ui.close();
-                }
-                if ui.button("Delete").clicked() {
-                    cmds.push(Cmd::Delete(child.path.clone()));
-                    ui.close();
-                }
+                // Only a folder is offered a paste, and only with something
+                // waiting on the clipboard.
+                entry_menu(ui, &child.path, can_paste, cmds);
             });
         } else {
             let is_selected = selected == Some(child.path.as_path());
@@ -945,26 +926,35 @@ fn tree_ui(
             if response.clicked() {
                 cmds.push(Cmd::Open(child.path.clone()));
             }
-            response.context_menu(|ui| {
-                if ui.button("Copy").clicked() {
-                    cmds.push(Cmd::Copy(child.path.clone()));
-                    ui.close();
-                }
-                if ui.button("Cut").clicked() {
-                    cmds.push(Cmd::Cut(child.path.clone()));
-                    ui.close();
-                }
-                ui.separator();
-                if ui.button("Rename").clicked() {
-                    cmds.push(Cmd::Rename(child.path.clone()));
-                    ui.close();
-                }
-                if ui.button("Delete").clicked() {
-                    cmds.push(Cmd::Delete(child.path.clone()));
-                    ui.close();
-                }
-            });
+            response.context_menu(|ui| entry_menu(ui, &child.path, false, cmds));
         }
+    }
+}
+
+/// What every row in the tree offers: put it on the clipboard, rename it,
+/// remove it. A folder takes a "Paste" among them and two items of its own
+/// above, and that is the whole of the difference between the two menus.
+fn entry_menu(ui: &mut Ui, path: &Path, can_paste: bool, cmds: &mut Vec<Cmd>) {
+    if ui.button("Copy").clicked() {
+        cmds.push(Cmd::Copy(path.to_path_buf()));
+        ui.close();
+    }
+    if ui.button("Cut").clicked() {
+        cmds.push(Cmd::Cut(path.to_path_buf()));
+        ui.close();
+    }
+    if can_paste && ui.button("Paste").clicked() {
+        cmds.push(Cmd::Paste(path.to_path_buf()));
+        ui.close();
+    }
+    ui.separator();
+    if ui.button("Rename").clicked() {
+        cmds.push(Cmd::Rename(path.to_path_buf()));
+        ui.close();
+    }
+    if ui.button("Delete").clicked() {
+        cmds.push(Cmd::Delete(path.to_path_buf()));
+        ui.close();
     }
 }
 

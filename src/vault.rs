@@ -357,10 +357,6 @@ pub(crate) mod tests {
         1 + node.children.iter().map(count).sum::<usize>()
     }
 
-    /// Three links back to an ancestor in one folder used to multiply at every
-    /// level until the walk ran out of time, on the thread drawing the window.
-    /// The kernel's own symlink limit does not help: it bounds the depth of a
-    /// single path, not how many paths there are.
     /// Two notes of the same name: `[[Foo]]` has to find the one nearest the
     /// top of the vault, not whichever branch the walk happened to enter first.
     #[test]
@@ -383,6 +379,10 @@ pub(crate) mod tests {
         );
     }
 
+    /// Three links back to an ancestor in one folder used to multiply at every
+    /// level until the walk ran out of time, on the thread drawing the window.
+    /// The kernel's own symlink limit does not help: it bounds the depth of a
+    /// single path, not how many paths there are.
     #[test]
     fn a_symlink_loop_does_not_explode() {
         let dir = TempDir::new("loop");

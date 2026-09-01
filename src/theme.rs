@@ -57,7 +57,7 @@ const SURFACE_RADIUS: CornerRadius = CornerRadius::same(12);
 const BODY_SIZE: f32 = 13.0;
 
 /// The Adwaita dark palette, over egui's dark visuals.
-pub fn adwaita_dark() -> egui::Visuals {
+fn adwaita_dark() -> egui::Visuals {
     let mut visuals = egui::Visuals::dark();
 
     visuals.window_fill = WINDOW_BG;
