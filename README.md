@@ -24,7 +24,7 @@ no X11 or XWayland fallback, and no runtime detection of one. Started without a
 compositor to connect to, it exits with an error rather than opening a window.
 
 - **a running Wayland compositor** (Sway, GNOME, KDE Plasma, Hyprland, …)
-- a Rust toolchain
+- Rust 1.95 or newer
 
 Nothing else. The built binary links `libc`, `libgcc_s` and `libm` and no other
 shared library; Wayland itself is opened by name at runtime. There is no GTK, no

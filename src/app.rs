@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use eframe::egui::emath::GuiRounding as _;
 use eframe::egui::{self, Ui};
@@ -101,9 +101,9 @@ pub struct App {
     index: HashMap<String, PathBuf>,
     open_path: Option<PathBuf>,
     buffer: String,
-    /// The open note's timestamp as of the last read or write this window did.
-    /// Anything else on disk means someone changed it behind our back.
-    open_mtime: Option<SystemTime>,
+    /// The open note as it last appeared on disk. Comparing the contents rather
+    /// than only metadata also catches writers that preserve timestamps.
+    open_disk: Option<String>,
     dirty: bool,
     last_edit: Instant,
     modal: Option<Modal>,
@@ -131,7 +131,7 @@ impl App {
             index,
             open_path: None,
             buffer: String::new(),
-            open_mtime: None,
+            open_disk: None,
             dirty: false,
             last_edit: Instant::now(),
             modal: None,
@@ -167,7 +167,7 @@ impl App {
             self.dirty = false;
             return Save::Done;
         };
-        if mtime_of(&path) != self.open_mtime {
+        if fs::read_to_string(&path).ok() != self.open_disk {
             // Ask once. Until it is answered the buffer stays dirty and this
             // returns early, so the autosave timer cannot ask again every frame.
             if self.modal.is_none() {
@@ -178,9 +178,8 @@ impl App {
         match vault::write_atomic(&path, &self.buffer) {
             Ok(()) => {
                 self.dirty = false;
-                // Our own write moved the note's timestamp; adopt it, or the
-                // next save would mistake it for someone else's.
-                self.open_mtime = mtime_of(&path);
+                // Our own write is now the version later edits are based on.
+                self.open_disk = Some(self.buffer.clone());
                 self.status = format!("Saved {}", name_of(&path));
                 Save::Done
             }
@@ -200,15 +199,11 @@ impl App {
         if self.save_now() != Save::Done {
             return;
         }
-        // Read the timestamp first: a write landing between the two is then
-        // newer than what we stored and gets noticed, where the other order
-        // would file it under the copy we already hold.
-        let mtime = mtime_of(&path);
         match fs::read_to_string(&path) {
             Ok(text) => {
+                self.open_disk = Some(text.clone());
                 self.buffer = text;
                 self.open_path = Some(path);
-                self.open_mtime = mtime;
                 self.dirty = false;
                 self.status.clear();
             }
@@ -224,11 +219,10 @@ impl App {
         let Some(path) = self.open_path.clone() else {
             return;
         };
-        let mtime = mtime_of(&path);
         match fs::read_to_string(&path) {
             Ok(text) => {
+                self.open_disk = Some(text.clone());
                 self.buffer = text;
-                self.open_mtime = mtime;
                 self.dirty = false;
                 self.status = format!("Reloaded {}", name_of(&path));
             }
@@ -513,7 +507,7 @@ impl App {
                             && (open == modal.target || open.starts_with(&modal.target))
                         {
                             self.open_path = None;
-                            self.open_mtime = None;
+                            self.open_disk = None;
                             self.buffer.clear();
                             self.dirty = false;
                         }
@@ -527,7 +521,7 @@ impl App {
             // the copy the buffer is based on, which lets the write through,
             // and do it straight away rather than waiting for the next pause.
             ModalKind::Conflict => {
-                self.open_mtime = mtime_of(&modal.target);
+                self.open_disk = fs::read_to_string(&modal.target).ok();
                 // This is the answer to the question, not another asking of it.
                 let _ = self.save_now();
             }
@@ -877,13 +871,6 @@ impl eframe::App for App {
     }
 }
 
-/// A file's modification time, or `None` when it cannot be read — which is
-/// also the answer for a file that is no longer there, so a note deleted
-/// underneath the buffer reads as changed rather than as unchanged.
-fn mtime_of(path: &Path) -> Option<SystemTime> {
-    fs::metadata(path).and_then(|meta| meta.modified()).ok()
-}
-
 fn name_of(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -996,7 +983,7 @@ mod tests {
     /// filesystem's own resolution is — the point of these tests is the
     /// comparison, not how finely the clock happens to tick.
     fn touch_later(path: &Path) {
-        let later = mtime_of(path).unwrap() + Duration::from_secs(10);
+        let later = fs::metadata(path).unwrap().modified().unwrap() + Duration::from_secs(10);
         File::options()
             .write(true)
             .open(path)
@@ -1036,6 +1023,33 @@ mod tests {
             matches!(app.modal.as_ref().map(|m| &m.kind), Some(ModalKind::Conflict)),
             "the question has to be put to someone"
         );
+    }
+
+    /// Some synchronisers and restore tools deliberately preserve a file's
+    /// timestamp. Metadata-only conflict checks cannot see their edits and used
+    /// to let autosave overwrite them without asking.
+    #[test]
+    fn an_external_change_with_the_same_timestamp_is_not_overwritten() {
+        let dir = TempDir::new("conflict-preserved-time");
+        let mut app = App::new(dir.0.clone());
+        let path = with_note(&mut app, &dir, "original");
+        let original_time = fs::metadata(&path).unwrap().modified().unwrap();
+
+        app.buffer = "mine".to_owned();
+        app.dirty = true;
+
+        fs::write(&path, "external").unwrap();
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(original_time)
+            .unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), original_time);
+
+        assert_eq!(app.save_now(), Save::Asked);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "external");
+        assert!(app.dirty, "the edits are still unsaved, not lost");
     }
 
     /// The buffer stays dirty while the question is unanswered, so the autosave

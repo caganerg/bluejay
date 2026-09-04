@@ -2,6 +2,7 @@
 name = "bluejay"
 version = "1.0.0"
 edition = "2024"
+rust-version = "1.95"
 
 [dependencies]
 # Wayland only: eframe's defaults enable both x11 and wayland (and pull in

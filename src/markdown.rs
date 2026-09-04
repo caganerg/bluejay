@@ -244,11 +244,9 @@ pub fn render(ui: &mut Ui, source: &str) -> Option<Action> {
                         ui.add_space(4.0);
                     }
                 }
-                TagEnd::Item => {
+                TagEnd::Item if !inlines.is_empty() || prefix.is_some() => {
                     // Tight lists have no inner paragraph, so flush here too.
-                    if !inlines.is_empty() || prefix.is_some() {
-                        flush_block(ui, &mut inlines, prefix.take(), indent(&list_stack, quote_depth), &mut action);
-                    }
+                    flush_block(ui, &mut inlines, prefix.take(), indent(&list_stack, quote_depth), &mut action);
                 }
                 TagEnd::Emphasis => style.em = false,
                 TagEnd::Strong => style.strong = false,
