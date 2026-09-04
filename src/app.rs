@@ -154,6 +154,12 @@ impl App {
     /// over whatever arrived — a sync, a `git pull`, an edit in another program
     /// — without anyone having asked it to.
     ///
+    /// "Changed" means the text on disk differs from the copy this window last
+    /// saw there, compared immediately before the write. The gap between the
+    /// two is not closed, and a write landing inside it is still overwritten.
+    /// Shutting it would take a lock the filesystem does not owe us, and it is
+    /// microseconds wide against a sync that arrives whenever it arrives.
+    ///
     /// What came of it is returned because most callers ask for this on the way
     /// to somewhere else — another note, another vault, a rename — and a buffer
     /// that was not written must not be left behind. Only `Save::Done` says it
@@ -167,9 +173,20 @@ impl App {
             self.dirty = false;
             return Save::Done;
         };
+        // An unanswered question leaves the buffer dirty, so the autosave timer
+        // arrives back here on every frame while the modal is up. Recognise the
+        // question already standing over this note rather than reading the note
+        // back to derive it again: what to do is being waited on, not decided,
+        // and deciding it again would also mean a whole file read per frame.
+        if let Some(modal) = &self.modal
+            && matches!(modal.kind, ModalKind::Conflict)
+            && modal.target == path
+        {
+            return Save::Asked;
+        }
         if fs::read_to_string(&path).ok() != self.open_disk {
-            // Ask once. Until it is answered the buffer stays dirty and this
-            // returns early, so the autosave timer cannot ask again every frame.
+            // Ask once — and only when nothing else is being asked, so a
+            // conflict cannot take the screen from a question already on it.
             if self.modal.is_none() {
                 self.modal = Some(Modal::new(ModalKind::Conflict, path));
             }
@@ -979,9 +996,10 @@ mod tests {
     use super::*;
     use crate::vault::tests::TempDir;
 
-    /// Give the note a timestamp that is unmistakably later, whatever the
-    /// filesystem's own resolution is — the point of these tests is the
-    /// comparison, not how finely the clock happens to tick.
+    /// Move the note's timestamp unmistakably forward, whatever the
+    /// filesystem's own resolution is. One test wants this now: what gets
+    /// compared is the text, so a timestamp on its own is precisely the change
+    /// that must not raise anything.
     fn touch_later(path: &Path) {
         let later = fs::metadata(path).unwrap().modified().unwrap() + Duration::from_secs(10);
         File::options()
@@ -1013,7 +1031,6 @@ mod tests {
         app.dirty = true;
 
         fs::write(&path, "theirs").unwrap();
-        touch_later(&path);
 
         assert_eq!(app.save_now(), Save::Asked);
 
@@ -1052,6 +1069,54 @@ mod tests {
         assert!(app.dirty, "the edits are still unsaved, not lost");
     }
 
+    /// The other half of the same rule. A timestamp is not what is compared any
+    /// more, so a note whose mtime moved but whose text did not is nobody's
+    /// edit — an archiver reading the vault, a backup touching what it copied —
+    /// and putting a question on screen for it would be crying wolf.
+    #[test]
+    fn a_changed_timestamp_alone_is_not_a_conflict() {
+        let dir = TempDir::new("conflict-touched-only");
+        let mut app = App::new(dir.0.clone());
+        let path = with_note(&mut app, &dir, "original");
+
+        app.buffer = "mine".to_owned();
+        app.dirty = true;
+
+        touch_later(&path);
+
+        assert_eq!(app.save_now(), Save::Done);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "mine");
+        assert!(app.modal.is_none(), "there was nothing to ask about");
+    }
+
+    /// A question already on screen is waited on, not decided again — even when
+    /// the disk goes back to the copy the buffer was based on. Deciding it again
+    /// used to let the write through underneath a modal still asking about it,
+    /// leaving an answer that then did nothing; it is also what had `save_now`
+    /// reading the whole note back on every frame the question was up.
+    #[test]
+    fn a_pending_conflict_is_not_withdrawn_by_the_disk() {
+        let dir = TempDir::new("pending-reverted");
+        let mut app = App::new(dir.0.clone());
+        let path = with_note(&mut app, &dir, "original");
+
+        app.buffer = "mine".to_owned();
+        app.dirty = true;
+        fs::write(&path, "theirs").unwrap();
+        assert_eq!(app.save_now(), Save::Asked);
+
+        // Whoever wrote "theirs" puts the note back the way it was.
+        fs::write(&path, "original").unwrap();
+
+        assert_eq!(app.save_now(), Save::Asked);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "original");
+        assert!(app.dirty, "the buffer waits for the answer, it is not written");
+        assert!(
+            matches!(app.modal.as_ref().map(|m| &m.kind), Some(ModalKind::Conflict)),
+            "and the question is still the one being answered"
+        );
+    }
+
     /// The buffer stays dirty while the question is unanswered, so the autosave
     /// timer calls `save_now` again on every later frame. None of those may
     /// write, and none may lose the buffer while waiting.
@@ -1064,7 +1129,6 @@ mod tests {
         app.buffer = "mine".to_owned();
         app.dirty = true;
         fs::write(&path, "theirs").unwrap();
-        touch_later(&path);
 
         for _ in 0..3 {
             assert_eq!(app.save_now(), Save::Asked);
@@ -1089,7 +1153,6 @@ mod tests {
         app.buffer = "mine".to_owned();
         app.dirty = true;
         fs::write(&path, "theirs").unwrap();
-        touch_later(&path);
         assert_eq!(app.save_now(), Save::Asked);
 
         let modal = app.modal.take().expect("conflict raised");
@@ -1109,14 +1172,13 @@ mod tests {
         app.buffer = "mine".to_owned();
         app.dirty = true;
         fs::write(&path, "theirs").unwrap();
-        touch_later(&path);
 
         app.reload_open();
 
         assert_eq!(app.buffer, "theirs");
         assert!(!app.dirty);
 
-        // And the adopted timestamp lets the next edit save without asking.
+        // And the adopted copy lets the next edit save without asking.
         app.buffer = "mine again".to_owned();
         app.dirty = true;
         assert_eq!(app.save_now(), Save::Done);
@@ -1141,7 +1203,6 @@ mod tests {
         app.buffer = "mine".to_owned();
         app.dirty = true;
         fs::write(&path, "theirs").unwrap();
-        touch_later(&path);
 
         app.apply(Cmd::Open(other.clone()));
 
@@ -1173,7 +1234,6 @@ mod tests {
         app.buffer = "mine".to_owned();
         app.dirty = true;
         fs::write(&path, "theirs").unwrap();
-        touch_later(&path);
 
         app.set_root(elsewhere.0.clone());
 
@@ -1192,7 +1252,6 @@ mod tests {
         assert_eq!(app.buffer, "original");
 
         fs::write(&path, "changed elsewhere").unwrap();
-        touch_later(&path);
 
         app.apply(Cmd::Reload);
 
@@ -1414,8 +1473,8 @@ mod tests {
         );
     }
 
-    /// Our own writes move the timestamp too, and must not look like someone
-    /// else's the next time round.
+    /// Our own writes change what is on disk too, and must not look like
+    /// someone else's the next time round.
     #[test]
     fn saving_repeatedly_never_raises_a_conflict() {
         let dir = TempDir::new("repeat");
