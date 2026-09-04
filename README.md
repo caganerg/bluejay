@@ -120,18 +120,19 @@ That is the whole linking feature: no backlinks, no graph, no aliases.
 
 ## Saving
 
-**Autosave**, chosen because it is the simpler of the two options — there is no
-dirty-state bookkeeping to get wrong and nothing to forget. The open note is
-written to disk 600 ms after you stop typing, and also when you switch notes,
-rename, or close the window. `Ctrl+S` forces a write immediately if you want the
-reassurance. A `•` next to the filename means there are unwritten edits; the
-status bar at the bottom reports saves and any filesystem errors.
+**Autosave, and nothing else** — chosen because it is the simpler of the two
+options, and left alone because a shortcut beside it only invites the habit of
+reaching for one. There is nothing to press and nothing to forget. The open note
+is written to disk 600 ms after you stop typing, and also when you switch notes,
+rename, or close the window. A `•` next to the filename means there are
+unwritten edits; the status bar at the bottom reports saves and any filesystem
+errors.
 
 Each save goes to a temporary file beside the note and is renamed over it, so a
 crash or a full disk leaves the previous note intact rather than a half-written
 one. Writing on a timer makes that worth doing: the window between truncating a
-file and finishing it reopens every time you pause, not just when you reach for
-Ctrl+S.
+file and finishing it reopens every time you pause, rather than whenever you
+happen to ask for it.
 
 Because the note is written on a timer, bluejay also checks that it is still the
 file it read. If the note changed on disk while you had unsaved edits — a sync,

@@ -844,15 +844,6 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        // The modal's backdrop stops the pointer but not a shortcut, and while
-        // one is open the answer to what should happen to the buffer is exactly
-        // what is being asked.
-        if self.modal.is_none() && ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S))
-        {
-            // Nothing follows this, so whatever came of it — written, asked
-            // about, or refused — is already on screen.
-            let _ = self.save_now();
-        }
 
         self.sidebar(ui);
         self.preview(ui);

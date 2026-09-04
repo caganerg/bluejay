@@ -205,11 +205,11 @@ pub fn save_root(root: &Path) {
 /// Write `contents` to `path` without ever leaving a half-written note there.
 ///
 /// `fs::write` truncates before it writes, so a crash or a full disk between
-/// the two leaves the note cut short — and autosave reopens that window every
-/// time typing pauses, rather than only when someone reaches for Ctrl+S. A
-/// temporary file beside the note, renamed over the top once it is complete,
-/// makes the swap atomic instead: readers see the old note or the new one and
-/// nothing in between.
+/// the two leaves the note cut short — and autosave is the only thing that
+/// writes here, so that window reopens every time typing pauses rather than
+/// when someone asks for it. A temporary file beside the note, renamed over the
+/// top once it is complete, makes the swap atomic instead: readers see the old
+/// note or the new one and nothing in between.
 ///
 /// The temporary name starts with a dot so `scan` skips it in the one case it
 /// outlives the write — the process dying between the two steps.
