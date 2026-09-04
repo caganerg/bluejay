@@ -46,8 +46,8 @@ enum Cmd {
 enum Save {
     /// Written, or there was nothing to write.
     Done,
-    /// The note changed underneath the buffer, and the question is now on
-    /// screen. Nothing should move until it is answered.
+    /// A question deciding what happens to the buffer is on screen. Nothing
+    /// should move until it is answered.
     Asked,
     /// The write itself failed, and said why in the status line.
     Failed,
@@ -175,11 +175,11 @@ impl App {
         };
         // An unanswered question leaves the buffer dirty, so the autosave timer
         // arrives back here on every frame while the modal is up. Recognise the
-        // question already standing over this note rather than reading the note
-        // back to derive it again: what to do is being waited on, not decided,
-        // and deciding it again would also mean a whole file read per frame.
+        // question already standing over this note rather than deciding for the
+        // user: a conflict must not be re-derived, and a reload explicitly asked
+        // for must win over the automatic save that would otherwise follow it.
         if let Some(modal) = &self.modal
-            && matches!(modal.kind, ModalKind::Conflict)
+            && matches!(modal.kind, ModalKind::Conflict | ModalKind::Reload)
             && modal.target == path
         {
             return Save::Asked;
@@ -1264,7 +1264,7 @@ mod tests {
     fn reload_with_edits_asks_first() {
         let dir = TempDir::new("reload-dirty");
         let mut app = App::new(dir.0.clone());
-        with_note(&mut app, &dir, "original");
+        let path = with_note(&mut app, &dir, "original");
 
         app.buffer = "mine".to_owned();
         app.dirty = true;
@@ -1275,6 +1275,13 @@ mod tests {
             app.modal.as_ref().map(|m| &m.kind),
             Some(ModalKind::Reload)
         ));
+
+        // The timer reaches `save_now` while the question is open. The reload
+        // the user asked for takes priority, so nothing is written underneath
+        // that question and the choice remains meaningful for as long as needed.
+        assert_eq!(app.save_now(), Save::Asked);
+        assert_eq!(fs::read_to_string(path).unwrap(), "original");
+        assert!(app.dirty, "the buffer must wait for the user's answer");
     }
 
     /// The rename box is seeded with the stem the sidebar shows, so pressing OK
