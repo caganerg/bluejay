@@ -240,7 +240,7 @@ pub fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     })();
 
     match written.and_then(|()| fs::rename(&tmp, path)) {
-        Ok(()) => Ok(()),
+        Ok(()) => File::open(parent).and_then(|dir| dir.sync_all()),
         Err(err) => {
             // The note on disk is untouched; only the scratch file is not.
             let _ = fs::remove_file(&tmp);
