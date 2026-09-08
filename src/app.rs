@@ -37,11 +37,6 @@ enum Cmd {
 }
 
 /// What became of the buffer when `save_now` was asked to write it.
-///
-/// The two that are not `Done` are told apart because they end differently: the
-/// question has an answer on screen and is worth waiting for, while a write that
-/// failed has only said so in the status line, and holding the window hostage to
-/// a full disk would leave no way out of it.
 #[derive(Debug, PartialEq)]
 enum Save {
     /// Written, or there was nothing to write.
@@ -71,6 +66,8 @@ enum ModalKind {
     Conflict,
     /// A reload was asked for with unsaved edits in the buffer.
     Reload,
+    /// A close request could not save the buffer.
+    SaveError,
 }
 
 struct Modal {
@@ -114,6 +111,7 @@ pub struct App {
     /// carries where it has been browsed to.
     picker: Option<Picker>,
     status: String,
+    discard_on_close: bool,
 }
 
 impl App {
@@ -138,6 +136,7 @@ impl App {
             clipboard: None,
             picker: None,
             status: String::new(),
+            discard_on_close: false,
         }
     }
 
@@ -179,7 +178,10 @@ impl App {
         // user: a conflict must not be re-derived, and a reload explicitly asked
         // for must win over the automatic save that would otherwise follow it.
         if let Some(modal) = &self.modal
-            && matches!(modal.kind, ModalKind::Conflict | ModalKind::Reload)
+            && matches!(
+                modal.kind,
+                ModalKind::Conflict | ModalKind::Reload | ModalKind::SaveError
+            )
             && modal.target == path
         {
             return Save::Asked;
@@ -203,6 +205,22 @@ impl App {
             Err(err) => {
                 self.status = format!("Could not save {}: {err}", name_of(&path));
                 Save::Failed
+            }
+        }
+    }
+
+    /// Only an explicit discard or a successful save permits closing.
+    fn can_close(&mut self) -> bool {
+        if self.discard_on_close {
+            return true;
+        }
+        match self.save_now() {
+            Save::Done => true,
+            Save::Asked => false,
+            Save::Failed => {
+                self.modal = self.open_path.clone()
+                    .map(|path| Modal::new(ModalKind::SaveError, path));
+                false
             }
         }
     }
@@ -544,7 +562,7 @@ impl App {
             }
             // "Keep my version" on a reload asked for by hand: there is nothing
             // to do but leave the buffer alone.
-            ModalKind::Reload => {}
+            ModalKind::Reload | ModalKind::SaveError => {}
         }
     }
 
@@ -739,6 +757,7 @@ impl App {
             ModalKind::Delete => ("Delete", ""),
             ModalKind::Conflict => ("Changed on disk", ""),
             ModalKind::Reload => ("Unsaved edits", ""),
+            ModalKind::SaveError => ("Could not save", ""),
         };
 
         let mut confirm = false;
@@ -746,6 +765,7 @@ impl App {
         // The third answer the two-button modals do not have: keep the buffer
         // and write it, or give it up and take what is on disk.
         let mut reload = false;
+        let mut discard = false;
 
         // A real modal, not a window: it draws a backdrop that swallows clicks,
         // so the tree behind cannot be used to start a second operation — which
@@ -759,7 +779,22 @@ impl App {
                     .size(15.0),
             );
             ui.add_space(10.0);
-            if matches!(modal.kind, ModalKind::Conflict | ModalKind::Reload) {
+            if modal.kind == ModalKind::SaveError {
+                ui.label("Your changes have not been saved.");
+                ui.label(&self.status);
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Retry save and close").clicked() {
+                        confirm = true;
+                    }
+                    if ui.button("Keep editing").clicked() {
+                        close = true;
+                    }
+                    if ui.button("Discard changes and close").clicked() {
+                        discard = true;
+                    }
+                });
+            } else if matches!(modal.kind, ModalKind::Conflict | ModalKind::Reload) {
                 let name = name_of(&modal.target);
                 let (question, detail) = match modal.kind {
                     ModalKind::Conflict => (
@@ -822,16 +857,23 @@ impl App {
             }
         });
 
-        // Escape, or a click on the backdrop, dismisses every modal but these
-        // two: leaving the question unanswered would only have `save_now` ask
-        // it again on the next frame, which reads as a modal that will not
-        // close.
-        if !matches!(modal.kind, ModalKind::Conflict | ModalKind::Reload) && response.should_close()
+        // Saving and reload questions require an explicit answer.
+        if !matches!(
+            modal.kind,
+            ModalKind::Conflict | ModalKind::Reload | ModalKind::SaveError
+        ) && response.should_close()
         {
             close = true;
         }
 
-        if reload {
+        if discard {
+            self.discard_on_close = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if confirm && modal.kind == ModalKind::SaveError {
+            if self.can_close() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        } else if reload {
             self.reload_open();
         } else if confirm {
             self.confirm_modal(&modal);
@@ -860,7 +902,7 @@ impl eframe::App for App {
         self.picker_ui(&ctx);
 
         // Autosave once editing has been quiet for a moment.
-        if self.dirty {
+        if self.dirty && !self.discard_on_close {
             let idle = self.last_edit.elapsed();
             if idle >= AUTOSAVE_DELAY {
                 let _ = self.save_now();
@@ -869,11 +911,8 @@ impl eframe::App for App {
             }
         }
 
-        // The last chance to write, and the one place a raised question has to
-        // hold the window open: closing over it would take the buffer and the
-        // question both. A write that merely failed is let through — a window
-        // that cannot be closed while a disk is full is worse than the loss.
-        if ctx.input(|i| i.viewport().close_requested()) && self.save_now() == Save::Asked {
+        // Failed writes keep the buffer available until the user chooses.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.can_close() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
     }
@@ -1008,6 +1047,45 @@ mod tests {
         app.refresh();
         app.open(path.clone());
         path
+    }
+
+    #[test]
+    fn a_failed_close_preserves_edits_and_can_be_retried() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new("close-error-retry");
+        let mut app = App::new(dir.0.clone());
+        let path = with_note(&mut app, &dir, "original");
+        app.buffer = "edited".to_owned();
+        app.dirty = true;
+        fs::set_permissions(&dir.0, fs::Permissions::from_mode(0o500)).unwrap();
+        let allowed = app.can_close();
+        fs::set_permissions(&dir.0, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(!allowed);
+        assert!(app.dirty);
+        assert_eq!(app.buffer, "edited");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "original");
+        assert!(matches!(
+            app.modal.as_ref().map(|m| &m.kind),
+            Some(ModalKind::SaveError)
+        ));
+        // Autosave and another close request cannot dismiss the question.
+        assert_eq!(app.save_now(), Save::Asked);
+        assert!(!app.can_close());
+        app.modal.take(); // Retry button consumes the modal before saving.
+        assert!(app.can_close());
+        assert_eq!(fs::read_to_string(path).unwrap(), "edited");
+    }
+
+    #[test]
+    fn explicit_discard_closes_without_writing() {
+        let dir = TempDir::new("close-discard");
+        let mut app = App::new(dir.0.clone());
+        let path = with_note(&mut app, &dir, "original");
+        app.buffer = "edited".to_owned();
+        app.dirty = true;
+        app.discard_on_close = true;
+        assert!(app.can_close());
+        assert_eq!(fs::read_to_string(path).unwrap(), "original");
     }
 
     /// The guarantee C2 is about: autosave fires on a timer, so it must not be

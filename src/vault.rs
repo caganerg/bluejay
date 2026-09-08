@@ -215,25 +215,29 @@ pub fn save_root(root: &Path) {
 /// outlives the write — the process dying between the two steps.
 pub fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let mut tmp_name = std::ffi::OsString::from(".");
-    tmp_name.push(path.file_name().unwrap_or_default());
-    tmp_name.push(".bluejay-tmp");
-    let tmp = parent.join(tmp_name);
-
-    let written = File::create(&tmp).and_then(|mut file| {
+    // Exclusive creation never follows an existing symlink or truncates a
+    // scratch file owned by another save, including another app instance.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let (tmp, mut file) = loop {
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = parent.join(format!(".bluejay-{}-{id}.tmp", std::process::id()));
+        match File::create_new(&tmp) {
+            Ok(file) => break (tmp, file),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    };
+    let written = (|| {
+        // Apply permissions through the file handle and propagate errors before
+        // replacing the note; silently ignoring them could expose private notes.
+        match fs::metadata(path) {
+            Ok(meta) => file.set_permissions(meta.permissions())?,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
         file.write_all(contents.as_bytes())?;
-        // Renaming only orders the directory entry. Without this the contents
-        // can still be in flight, and a crash leaves the note's name pointing
-        // at an empty file — losing it more thoroughly than a torn write would.
         file.sync_all()
-    });
-
-    // The rename replaces the note with the scratch file, permissions and all,
-    // and a fresh file only carries whatever the umask allows. Without this a
-    // note the user had made private would come back readable by everyone.
-    if let Ok(meta) = fs::metadata(path) {
-        let _ = fs::set_permissions(&tmp, meta.permissions());
-    }
+    })();
 
     match written.and_then(|()| fs::rename(&tmp, path)) {
         Ok(()) => Ok(()),
@@ -351,6 +355,40 @@ pub(crate) mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn saving_does_not_follow_a_preexisting_scratch_symlink() {
+        let dir = TempDir::new("scratch-symlink");
+        let note = dir.0.join("note.md");
+        let other = dir.0.join("other.md");
+        fs::write(&note, "old").unwrap();
+        fs::write(&other, "unrelated").unwrap();
+        let scratch = dir.0.join(".note.md.bluejay-tmp");
+        symlink(&other, &scratch).unwrap();
+        write_atomic(&note, "new").unwrap();
+        assert_eq!(fs::read_to_string(&other).unwrap(), "unrelated");
+        assert_eq!(fs::read_to_string(&note).unwrap(), "new");
+        assert!(!fs::symlink_metadata(note).unwrap().file_type().is_symlink());
+        assert!(fs::symlink_metadata(scratch).unwrap().file_type().is_symlink());
+    }
+
+    #[test]
+    fn concurrent_saves_use_independent_scratch_files() {
+        let dir = TempDir::new("concurrent-save");
+        let note = dir.0.join("note.md");
+        fs::write(&note, "old").unwrap();
+        let first = "a".repeat(100_000);
+        let second = "b".repeat(100_000);
+        std::thread::scope(|scope| {
+            let a = scope.spawn(|| write_atomic(&note, &first));
+            let b = scope.spawn(|| write_atomic(&note, &second));
+            a.join().unwrap().unwrap();
+            b.join().unwrap().unwrap();
+        });
+        let saved = fs::read_to_string(note).unwrap();
+        assert!(saved == first || saved == second);
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
     }
 
     fn count(node: &Node) -> usize {

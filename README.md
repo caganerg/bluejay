@@ -134,6 +134,9 @@ one. Writing on a timer makes that worth doing: the window between truncating a
 file and finishing it reopens every time you pause, rather than whenever you
 happen to ask for it.
 
+If saving fails when closing the window, bluejay keeps your edits and offers
+to retry saving, keep editing, or explicitly discard the changes and close.
+
 Because the note is written on a timer, bluejay also checks that it is still the
 file it read. If the note changed on disk while you had unsaved edits — a sync,
 a `git pull`, an edit in another program — the save stops and asks which copy to
