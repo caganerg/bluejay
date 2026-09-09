@@ -6,6 +6,7 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 /// One entry in the sidebar tree. Directories carry their children; files don't.
@@ -217,11 +218,16 @@ pub fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     // Exclusive creation never follows an existing symlink or truncates a
     // scratch file owned by another save, including another app instance.
+    //
+    // The mode is asked for at creation rather than left to the umask: the file
+    // would otherwise be 0644 under a default one, and a reader that opened it
+    // in the window before the permissions below narrow it would hold a
+    // descriptor on the finished note with the access it had on the way in.
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let (tmp, mut file) = loop {
         let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let tmp = parent.join(format!(".bluejay-{}-{id}.tmp", std::process::id()));
-        match File::create_new(&tmp) {
+        match File::options().write(true).create_new(true).mode(0o600).open(&tmp) {
             Ok(file) => break (tmp, file),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(err),
@@ -272,19 +278,26 @@ pub fn unique_dest(dir: &Path, name: &str) -> PathBuf {
     if !first.exists() {
         return first;
     }
-    // Folders are the only other thing the tree shows, and they carry no
-    // extension worth preserving. Slicing at the stem keeps the extension
-    // spelled the way it arrived, so a ".MD" file does not gain a ".md" twin.
-    let stem = note_stem(name);
-    let ext = &name[stem.len()..];
     let mut n: u32 = 2;
     loop {
-        let candidate = dir.join(format!("{stem} ({n}){ext}"));
+        let candidate = dir.join(numbered_name(name, n));
         if !candidate.exists() {
             return candidate;
         }
         n += 1;
     }
+}
+
+/// `name` with " (`n`)" inserted before its extension, which is the name both
+/// `unique_dest` and `copy_recursive` fall back to when one is taken.
+///
+/// Folders are the only other thing the tree shows, and they carry no extension
+/// worth preserving. Slicing at the stem keeps the extension spelled the way it
+/// arrived, so a ".MD" file does not gain a ".md" twin.
+fn numbered_name(name: &str, n: u32) -> String {
+    let stem = note_stem(name);
+    let ext = &name[stem.len()..];
+    format!("{stem} ({n}){ext}")
 }
 
 /// Copy a file, or a directory and everything under it, to `dest`, which must
@@ -293,12 +306,24 @@ pub fn unique_dest(dir: &Path, name: &str) -> PathBuf {
 ///
 /// Symlinks are the one thing left behind, for two reasons. A link back to an
 /// ancestor would make this walk the copy it is writing, filling the disk
-/// rather than merely hanging as `scan` does; and `fs::copy` reads through a
-/// link, so one pointing outside the vault would quietly materialise a real
-/// copy of whatever it names inside it.
+/// rather than merely hanging as `scan` does; and reading a source file reads
+/// through a link, so one pointing outside the vault would quietly materialise
+/// a real copy of whatever it names inside it.
+///
+/// A link *at the destination* is the same trap from the other end. `dest` came
+/// from `unique_dest`, whose `exists()` stats through a link and so answers
+/// "free" for one whose target is missing; `fs::copy` would then open that name
+/// without `O_NOFOLLOW` and lay the note down wherever it points — outside the
+/// vault, or under a name `scan` skips, with the paste reporting success either
+/// way. So the name is claimed by exclusive creation, which cannot follow a
+/// link or truncate a file that was already there, and the collision
+/// `unique_dest` could not see is resolved here instead.
 pub fn copy_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
     // `symlink_metadata` describes the link, never its target.
     if fs::symlink_metadata(src)?.is_dir() {
+        // `create_dir`, not `create_dir_all`: the first fails on a name that is
+        // already taken, a symlink to a directory included, and the second
+        // would walk into one and call the folder made.
         fs::create_dir(dest)?;
         for entry in fs::read_dir(src)? {
             let entry = entry?;
@@ -309,8 +334,41 @@ pub fn copy_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
         }
         Ok(())
     } else {
-        fs::copy(src, dest).map(|_| ())
+        copy_file(src, dest)
     }
+}
+
+/// Copy one file to `dest`, or to the next free " (n)" name beside it.
+fn copy_file(src: &Path, dest: &Path) -> std::io::Result<()> {
+    let mut reader = File::open(src)?;
+    let dir = dest.parent().unwrap_or_else(|| Path::new("."));
+    let name = dest
+        .file_name()
+        .unwrap_or_else(|| OsStr::new(""))
+        .to_string_lossy()
+        .into_owned();
+    let mut candidate = dest.to_path_buf();
+    let mut n: u32 = 1;
+    // Restrictive from the first byte, for the same reason `write_atomic` is:
+    // the source's own permissions go on once the contents are down, and until
+    // then nothing else may read a note it would not have been shown.
+    let mut writer = loop {
+        match File::options()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&candidate)
+        {
+            Ok(file) => break file,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                n += 1;
+                candidate = dir.join(numbered_name(&name, n));
+            }
+            Err(err) => return Err(err),
+        }
+    };
+    std::io::copy(&mut reader, &mut writer)?;
+    writer.set_permissions(reader.metadata()?.permissions())
 }
 
 /// Whether `folder` is `dir` itself or sits somewhere under it.

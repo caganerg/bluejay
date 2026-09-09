@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -282,8 +282,13 @@ impl App {
         // in, written by another program — is missing from it. `create_new`
         // fails instead of truncating, which keeps the answer right even when
         // the file appears between this line and the one before it.
+        //
+        // The name is claimed here, but the contents go down through
+        // `write_atomic`: this note is opened clean, so nothing later saves it
+        // again, and without the two syncs that function does a power loss
+        // between the write and the next flush would take the note with it.
         match File::create_new(&path) {
-            Ok(mut file) => match file.write_all(format!("# {}\n\n", name.trim()).as_bytes()) {
+            Ok(_) => match vault::write_atomic(&path, &format!("# {}\n\n", name.trim())) {
                 Ok(()) => {
                     self.refresh();
                     self.open(path);
