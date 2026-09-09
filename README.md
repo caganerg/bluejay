@@ -16,6 +16,25 @@ but never opened, and an image is drawn as its link rather than downloaded.
 └────────────┴──────────────────────┴──────────────────────┘
 ```
 
+## Status
+
+Bluejay is finished. It does what it was written to do — a tree, an editor and a
+preview over a folder of `.md` files — and there is no roadmap behind it, no
+next feature waiting and no plan to ship one. 1.1.0 is where it stops. Expect no
+updates for a long time.
+
+That is a statement about intent rather than about decay. Nothing here is left
+half-built or waiting on a version that never came: the features described below
+are all of them, and the dependency versions are pinned in `Cargo.lock`, so a
+build from this tree is the same build tomorrow. Issues and pull requests may sit
+unanswered.
+
+If it does eventually stop working — a compositor changes, a crate stops
+building — nothing of yours is trapped in it. Your notes are `.md` files in a
+folder you picked, written by nothing more exotic than a rename over a temporary
+file. Any editor on the machine opens them, and deleting the app leaves them
+exactly as they are.
+
 ## Requirements
 
 Bluejay is **Wayland-only**. The X11 backend is compiled out, not merely
