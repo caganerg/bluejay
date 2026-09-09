@@ -1,5 +1,5 @@
 [package]
-name = "bluejay"
+name = "Bluejay"
 version = "1.0.2"
 edition = "2024"
 rust-version = "1.95"
@@ -33,7 +33,7 @@ pulldown-cmark = { version = "0.13.4", default-features = false }
 # subprocesses at every launch — the one surface left that would have looked
 # different on every desktop, after the app's own two typefaces were baked in.
 # Without the font features, `sctk-adwaita` compiles its config and font lookup
-# out altogether, so the cost of this is the word "bluejay" in the titlebar.
+# out altogether, so the cost of this is the word "Bluejay" in the titlebar.
 winit = { version = "0.30.13", default-features = false, features = [
     "rwh_06",
     "wayland",

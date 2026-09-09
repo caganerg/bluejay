@@ -42,16 +42,16 @@ const UI_MONO: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf
 const BOLD_WEIGHT: f32 = 700.0;
 
 /// Wayland app id, and the basename the desktop entry must carry.
-const APP_ID: &str = "bluejay";
+const APP_ID: &str = "Bluejay";
 
 fn main() -> ExitCode {
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1280.0, 800.0])
         .with_min_inner_size([700.0, 400.0])
-        .with_title("bluejay")
+        .with_title("Bluejay")
         // eframe would derive this from the app name anyway, but the desktop
         // entry has to match it exactly, so it is pinned here rather than left
-        // to a default: `bluejay.desktop` is what a compositor looks up to find
+        // to a default: `Bluejay.desktop` is what a compositor looks up to find
         // the icon, and it finds it by this app id.
         .with_app_id(APP_ID);
 
@@ -65,7 +65,7 @@ fn main() -> ExitCode {
     };
 
     let result = eframe::run_native(
-        "bluejay",
+        "Bluejay",
         options,
         Box::new(|cc| {
             install_fonts(&cc.egui_ctx);
@@ -79,9 +79,9 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("bluejay: could not open a window: {err}");
+            eprintln!("Bluejay: could not open a window: {err}");
             eprintln!(
-                "bluejay is built for Wayland only. It needs a running Wayland \
+                "Bluejay is built for Wayland only. It needs a running Wayland \
                  compositor; there is no X11 or XWayland fallback."
             );
             ExitCode::FAILURE
@@ -92,7 +92,7 @@ fn main() -> ExitCode {
 /// The window icon, decoded from the logo baked into the binary.
 ///
 /// Wayland has no window-icon protocol that winit speaks, so this reaches the
-/// compositor nowhere and the taskbar icon comes from `bluejay.desktop` instead
+/// compositor nowhere and the taskbar icon comes from `Bluejay.desktop` instead
 /// — see the README. It is set anyway because it costs one decode at startup
 /// and is the only thing that would carry the logo on any other backend; a
 /// failure here is not worth refusing to start over, so a bad decode just
@@ -101,7 +101,7 @@ fn load_icon() -> Option<egui::IconData> {
     match eframe::icon_data::from_png_bytes(&include_bytes!("../assets/logo.png")[..]) {
         Ok(icon) => Some(icon),
         Err(err) => {
-            eprintln!("bluejay: could not decode the window icon: {err}");
+            eprintln!("Bluejay: could not decode the window icon: {err}");
             None
         }
     }
@@ -195,7 +195,7 @@ impl eframe::App for Bluejay {
                 egui::CentralPanel::default().show(ui, |ui| {
                     ui.vertical_centered(|ui| {
                         ui.add_space(28.0);
-                        ui.heading("bluejay");
+                        ui.heading("Bluejay");
                         ui.add_space(8.0);
                         ui.label("Pick the folder your .md notes live in.");
                     });

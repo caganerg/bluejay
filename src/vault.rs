@@ -155,7 +155,7 @@ pub fn build_index(node: &Node, index: &mut HashMap<String, PathBuf>) {
 /// Where the vault path is remembered.
 fn config_file() -> Option<PathBuf> {
     let base = config_dir(std::env::var_os("XDG_CONFIG_HOME"), std::env::home_dir())?;
-    Some(base.join("bluejay").join("vault.txt"))
+    Some(base.join("Bluejay").join("vault.txt"))
 }
 
 /// `$XDG_CONFIG_HOME`, or `~/.config` when it is unset — the one rule the
@@ -226,7 +226,7 @@ pub fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let (tmp, mut file) = loop {
         let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let tmp = parent.join(format!(".bluejay-{}-{id}.tmp", std::process::id()));
+        let tmp = parent.join(format!(".Bluejay-{}-{id}.tmp", std::process::id()));
         match File::options().write(true).create_new(true).mode(0o600).open(&tmp) {
             Ok(file) => break (tmp, file),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -399,7 +399,7 @@ pub(crate) mod tests {
     impl TempDir {
         pub(crate) fn new(tag: &str) -> Self {
             let path = std::env::temp_dir().join(format!(
-                "bluejay-test-{tag}-{}-{:?}",
+                "Bluejay-test-{tag}-{}-{:?}",
                 std::process::id(),
                 std::thread::current().id()
             ));
@@ -422,7 +422,7 @@ pub(crate) mod tests {
         let other = dir.0.join("other.md");
         fs::write(&note, "old").unwrap();
         fs::write(&other, "unrelated").unwrap();
-        let scratch = dir.0.join(".note.md.bluejay-tmp");
+        let scratch = dir.0.join(".note.md.Bluejay-tmp");
         symlink(&other, &scratch).unwrap();
         write_atomic(&note, "new").unwrap();
         assert_eq!(fs::read_to_string(&other).unwrap(), "unrelated");
@@ -575,7 +575,7 @@ pub(crate) mod tests {
     fn a_leftover_scratch_file_stays_out_of_the_tree() {
         let dir = TempDir::new("scratch");
         fs::write(dir.0.join("real.md"), "# real").unwrap();
-        fs::write(dir.0.join(".note.md.bluejay-tmp"), "half written").unwrap();
+        fs::write(dir.0.join(".note.md.Bluejay-tmp"), "half written").unwrap();
 
         let tree = scan(&dir.0);
         let names: Vec<&str> = tree.children.iter().map(|c| c.name.as_str()).collect();

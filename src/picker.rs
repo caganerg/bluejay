@@ -1,4 +1,4 @@
-//! bluejay's own folder picker.
+//! Bluejay's own folder picker.
 //!
 //! Choosing a vault used to open a GTK dialog — the one window in the app that
 //! the app did not draw. It came up in someone else's toolkit, wearing the

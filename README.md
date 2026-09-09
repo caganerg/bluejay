@@ -1,4 +1,4 @@
-# bluejay
+# Bluejay
 
 A small native desktop markdown note app in Rust: a file tree, a plain text
 editor, and a live preview, side by side. No Electron, no webview, no
@@ -18,7 +18,7 @@ but never opened, and an image is drawn as its link rather than downloaded.
 
 ## Requirements
 
-bluejay is **Wayland-only**. The X11 backend is compiled out, not merely
+Bluejay is **Wayland-only**. The X11 backend is compiled out, not merely
 disabled, so a running Wayland compositor is the minimum requirement: there is
 no X11 or XWayland fallback, and no runtime detection of one. Started without a
 compositor to connect to, it exits with an error rather than opening a window.
@@ -28,7 +28,7 @@ compositor to connect to, it exits with an error rather than opening a window.
 
 Nothing else. The built binary links `libc`, `libgcc_s` and `libm` and no other
 shared library; Wayland itself is opened by name at runtime. There is no GTK, no
-Pango, no Cairo, no fontconfig and no FreeType, because every window bluejay
+Pango, no Cairo, no fontconfig and no FreeType, because every window Bluejay
 shows is one it draws itself out of its own typefaces.
 
 ## Build and run
@@ -39,8 +39,8 @@ cargo run --release  # noticeably smoother
 cargo test           # markdown renderer tests
 ```
 
-On first launch bluejay asks for the folder your notes live in. The choice is
-remembered in `~/.config/bluejay/vault.txt` (delete that file to pick a
+On first launch Bluejay asks for the folder your notes live in. The choice is
+remembered in `~/.config/Bluejay/vault.txt` (delete that file to pick a
 different folder).
 
 ## Desktop entry and icon
@@ -49,19 +49,19 @@ The logo lives at `assets/logo.png` (512×512) and is baked into the binary as
 the window icon. On Wayland that alone shows nothing: there is no window-icon
 protocol winit speaks, so `set_window_icon` is a silent no-op and the icon a
 taskbar or app switcher draws comes from a desktop entry matched against the
-window's **app id**, which bluejay sets to `bluejay`. Install both to get the
+window's **app id**, which Bluejay sets to `Bluejay`. Install both to get the
 logo out of the binary and onto your bar:
 
 ```sh
-install -Dm755 target/release/bluejay   ~/.local/bin/bluejay
-install -Dm644 assets/logo.png          ~/.local/share/icons/hicolor/512x512/apps/bluejay.png
-install -Dm644 assets/bluejay.desktop   ~/.local/share/applications/bluejay.desktop
+install -Dm755 target/release/Bluejay   ~/.local/bin/Bluejay
+install -Dm644 assets/logo.png          ~/.local/share/icons/hicolor/512x512/apps/Bluejay.png
+install -Dm644 assets/Bluejay.desktop   ~/.local/share/applications/Bluejay.desktop
 gtk-update-icon-cache -f ~/.local/share/icons/hicolor 2>/dev/null || true
 update-desktop-database ~/.local/share/applications 2>/dev/null || true
 ```
 
-The `Icon=bluejay` line in the entry is what points at the installed PNG, and
-`StartupWMClass=bluejay` is what ties a running window back to the entry. Rename
+The `Icon=Bluejay` line in the entry is what points at the installed PNG, and
+`StartupWMClass=Bluejay` is what ties a running window back to the entry. Rename
 either the app id or the desktop file and the window goes back to a generic
 icon.
 
@@ -134,10 +134,10 @@ one. Writing on a timer makes that worth doing: the window between truncating a
 file and finishing it reopens every time you pause, rather than whenever you
 happen to ask for it.
 
-If saving fails when closing the window, bluejay keeps your edits and offers
+If saving fails when closing the window, Bluejay keeps your edits and offers
 to retry saving, keep editing, or explicitly discard the changes and close.
 
-Because the note is written on a timer, bluejay also checks that it is still the
+Because the note is written on a timer, Bluejay also checks that it is still the
 file it read. If the note changed on disk while you had unsaved edits — a sync,
 a `git pull`, an edit in another program — the save stops and asks which copy to
 keep instead of quietly winning. The **⟳** button reloads the open note along
@@ -217,6 +217,6 @@ under Wayland the X11 backend is never the one answering.
 It is worth naming, though, because it is the only code in the binary that could
 open a socket at all: an X display spelled `host:0` is reached over TCP, which is
 how `getaddrinfo` ends up among the binary's imports. The offline claim above is
-about what the app does, not about which symbols the linker kept — bluejay never
+about what the app does, not about which symbols the linker kept — Bluejay never
 asks for that path, and it can only be taken by a `DISPLAY` naming a remote host
 after the Wayland clipboard has already failed.
