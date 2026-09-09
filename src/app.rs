@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -287,7 +288,18 @@ impl App {
         // `write_atomic`: this note is opened clean, so nothing later saves it
         // again, and without the two syncs that function does a power loss
         // between the write and the next flush would take the note with it.
-        match File::create_new(&path) {
+        //
+        // Claimed at 0600 rather than through `File::create_new`, which applies
+        // the umask: `write_atomic` copies the permissions of whatever is
+        // already at the name onto its scratch file before writing, so a
+        // placeholder made 0644 there would widen that scratch file back and
+        // hand the finished note the mode the 0600 creation exists to avoid.
+        match File::options()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
             Ok(_) => match vault::write_atomic(&path, &format!("# {}\n\n", name.trim())) {
                 Ok(()) => {
                     self.refresh();
