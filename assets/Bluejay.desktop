@@ -9,5 +9,18 @@ Terminal=false
 Categories=Utility;TextEditor;
 Keywords=markdown;notes;editor;
 MimeType=text/markdown;
-StartupNotify=true
+
+# Off, because Bluejay cannot end a startup sequence it has begun. With this
+# true the launcher hands the process an XDG_ACTIVATION_TOKEN and asks the
+# compositor to show the busy cursor until someone spends that token; the way to
+# spend it on Wayland is xdg_activation_v1.activate on the window's surface,
+# which winit does only for a token passed to it as `with_activation_token`, and
+# eframe neither reads the variable nor offers anywhere to hand one in. The
+# token was therefore dropped on the floor at every launch and the cursor span
+# on under an open, already usable window for as long as GNOME's own timeout on
+# an unanswered sequence runs. What is lost by turning it off is the launch
+# feedback itself — no busy cursor, no pulsing icon in the dash — which is a
+# fair trade for a window that is up in well under a second.
+StartupNotify=false
+
 StartupWMClass=Bluejay

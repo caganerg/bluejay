@@ -84,6 +84,16 @@ The `Icon=Bluejay` line in the entry is what points at the installed PNG, and
 either the app id or the desktop file and the window goes back to a generic
 icon.
 
+The entry also carries `StartupNotify=false`, which is not an oversight. A
+launcher that sees it true hands the process an `XDG_ACTIVATION_TOKEN` and asks
+the compositor for the busy cursor until that token is spent on the new window;
+spending it means an `xdg_activation_v1` request that winit makes only for a
+token handed to it, and eframe gives an app nowhere to hand one in. So the token
+went unspent and GNOME span the cursor on over an open, usable window until its
+own timeout ran out. False means no token, no sequence and no cursor — Bluejay
+opens with no launch feedback at all, which is what a window that is up in well
+under a second can afford.
+
 ## What it does
 
 - **Tree** — mirrors the folder structure on disk, showing directories and
