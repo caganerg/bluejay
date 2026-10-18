@@ -19,9 +19,14 @@ use std::sync::Arc;
 use eframe::egui::{self, Color32, CornerRadius, Stroke};
 
 // The libadwaita dark palette. `_BG` names are surfaces, in the order they
-// stack: the window, then the sunken views drawn on it, then the raised
-// controls drawn on those.
-const WINDOW_BG: Color32 = Color32::from_rgb(0x24, 0x24, 0x24);
+// stack: the backdrop the window's cards sit on, the cards themselves, then
+// the sunken views drawn on those, then the raised controls drawn on those.
+//
+// `WINDOW_BG` filled the whole window while the panes ran edge to edge. The
+// panes are inset cards now, so it is the surface a card is drawn on and
+// `APP_BG` — a shade darker — is what shows between and around them.
+pub const APP_BG: Color32 = Color32::from_rgb(0x18, 0x18, 0x18);
+pub const WINDOW_BG: Color32 = Color32::from_rgb(0x24, 0x24, 0x24);
 pub const VIEW_BG: Color32 = Color32::from_rgb(0x1e, 0x1e, 0x1e);
 pub const CONTROL_BG: Color32 = Color32::from_rgb(0x30, 0x30, 0x30);
 const CONTROL_HOVER_BG: Color32 = Color32::from_rgb(0x38, 0x38, 0x38);
@@ -42,8 +47,9 @@ pub const BORDER: Color32 = Color32::from_rgb(0x3d, 0x3d, 0x3d);
 
 /// Buttons, entries, selected rows — Adwaita's control radius.
 const CONTROL_RADIUS: CornerRadius = CornerRadius::same(6);
-/// Dialogs and menus, which are rounder than the things inside them.
-const SURFACE_RADIUS: CornerRadius = CornerRadius::same(12);
+/// Dialogs, menus and the editor and preview cards, which are rounder than the
+/// things inside them.
+pub const SURFACE_RADIUS: CornerRadius = CornerRadius::same(12);
 
 /// Point size of the chrome: sidebar rows, buttons, dialogs, status bar.
 ///

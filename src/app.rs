@@ -12,6 +12,7 @@ use eframe::egui::{self, Ui};
 
 use crate::markdown::{self, Action};
 use crate::picker::{self, Picker};
+use crate::theme;
 use crate::vault::{self, Node};
 
 /// How long editing has to pause before the note is written to disk.
@@ -20,6 +21,26 @@ const AUTOSAVE_DELAY: Duration = Duration::from_millis(600);
 /// Point size of the raw markdown in the editor pane. JetBrains Mono runs a
 /// little large for its nominal size, so this sits just under the preview's 15.
 const EDITOR_SIZE: f32 = 14.0;
+
+/// How far the panes stand off the window's edges, and off one another, so the
+/// window reads as a backdrop with cards on it rather than one sheet of text
+/// run to the frame.
+const PANE_GAP: i8 = 10;
+
+/// Padding between a card's edge and what is drawn inside it.
+const PANE_PAD: i8 = 14;
+
+/// How narrow the tree and the preview may be dragged, and how wide they may
+/// grow before the editor would be squeezed out. The editor has no width of
+/// its own — it is what is left between the other two — so its floor,
+/// [`EDITOR_MIN`], is kept by capping their ceilings below it.
+const SIDEBAR_MIN: f32 = 150.0;
+const SIDEBAR_MAX: f32 = 420.0;
+const PREVIEW_MIN: f32 = 220.0;
+const PREVIEW_MAX: f32 = 1200.0;
+/// The narrowest the editor may be left with. It cannot be dragged itself, so
+/// this is what the other two are held back for.
+const EDITOR_MIN: f32 = 260.0;
 
 /// Something the sidebar wants done, collected while the tree is borrowed and
 /// applied once the panel closure is over.
@@ -673,11 +694,26 @@ impl App {
         let can_go_back = !self.back.is_empty();
         let can_go_forward = !self.forward.is_empty();
 
-        egui::Panel::left("sidebar")
-            .resizable(true)
-            .default_size(230.0)
-            .size_range(150.0..=420.0)
-            .show(ui, |ui| {
+        // The editor is what is left between the tree and the preview, so the
+        // tree may only grow into what remains once the preview's own floor and
+        // the editor's are set aside. Without this it could be dragged wide
+        // enough to leave the editor nothing.
+        let room = EDITOR_MIN + 2.0 * PANE_GAP as f32;
+        let widest = (ui.available_width() - PREVIEW_MIN - room).clamp(SIDEBAR_MIN, SIDEBAR_MAX);
+
+        resizing_without_line(
+            ui,
+            egui::Panel::left("sidebar")
+                .resizable(true)
+                .default_size(230.0)
+                .size_range(SIDEBAR_MIN..=widest)
+                // No fill and no edge line: the tree sits straight on the
+                // window's backdrop, and the room between it and the editor
+                // card is that card's own margin rather than a rule drawn in
+                // the gap.
+                .show_separator_line(false)
+                .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 2))),
+            |ui| {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     // Back and forward through the notes this window has shown,
@@ -742,7 +778,8 @@ impl App {
                     .show(ui, |ui| {
                         tree_ui(ui, tree, selected, can_paste, &mut cmds);
                     });
-            });
+            },
+        );
 
         for cmd in cmds {
             self.apply(cmd);
@@ -753,11 +790,26 @@ impl App {
         let mut action = None;
         let source = std::mem::take(&mut self.buffer);
 
-        egui::Panel::right("preview")
-            .resizable(true)
-            .default_size(420.0)
-            .size_range(220.0..=1200.0)
-            .show(ui, |ui| {
+        // The preview may only grow into what is left once the editor's floor
+        // is set aside.
+        let room = EDITOR_MIN + 2.0 * PANE_GAP as f32;
+        let widest = (ui.available_width() - room).clamp(PREVIEW_MIN, PREVIEW_MAX);
+
+        resizing_without_line(
+            ui,
+            egui::Panel::right("preview")
+                .resizable(true)
+                .default_size(420.0)
+                .size_range(PREVIEW_MIN..=widest)
+                .show_separator_line(false)
+                // The gap to the editor is drawn by that card's own right
+                // margin; this one only has to end level with it, above the
+                // status line.
+                .frame(card_frame().outer_margin(egui::Margin {
+                    bottom: PANE_GAP,
+                    ..Default::default()
+                })),
+            |ui| {
                 // The pane keeps the width the user dragged it to. A note too
                 // wide to fit — a big table — scrolls sideways instead of
                 // pushing the panel out, which egui would otherwise store as
@@ -779,7 +831,8 @@ impl App {
                         }
                         ui.add_space(24.0);
                     });
-            });
+            },
+        );
 
         self.buffer = source;
         if let Some(Action::OpenNote(name)) = action {
@@ -788,7 +841,16 @@ impl App {
     }
 
     fn editor(&mut self, ui: &mut Ui) {
-        egui::CentralPanel::default().show(ui, |ui| {
+        // The editor is the middle card: a gap to the tree on the left, to the
+        // preview on the right, and to the status line below. The top is
+        // already inset by the window's own margin.
+        let frame = card_frame().outer_margin(egui::Margin {
+            left: PANE_GAP,
+            right: PANE_GAP,
+            bottom: PANE_GAP,
+            ..Default::default()
+        });
+        egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             let Some(path) = self.open_path.clone() else {
                 ui.centered_and_justified(|ui| {
                     ui.label("Select a note on the left, or create one.");
@@ -1002,21 +1064,90 @@ impl App {
     }
 }
 
+/// The frame the editor and the preview are drawn in: a rounded page on the
+/// window's backdrop rather than a pane that runs to the window's edges.
+///
+/// The caller adds its own `outer_margin` for the gap it wants on each side;
+/// what is here is the surface itself.
+fn card_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(theme::WINDOW_BG)
+        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+        .corner_radius(theme::SURFACE_RADIUS)
+        .inner_margin(egui::Margin::same(PANE_PAD))
+}
+
+/// Show a resizable panel with egui's resize line suppressed.
+///
+/// egui paints a bright rule along a resizable panel's inner edge while its
+/// handle is hovered or dragged. The panes are cards on a backdrop now, so that
+/// rule lands in the empty gap between two of them and reads as a seam
+/// belonging to neither. The handle still works and the resize cursor still
+/// shows; only the rule is gone — the two strokes it is drawn from are emptied
+/// for the call, and put back at the top of the panel's own contents so that
+/// nothing drawn inside it changes colour.
+fn resizing_without_line(ui: &mut Ui, panel: egui::Panel, add_contents: impl FnOnce(&mut Ui)) {
+    let hovered = ui.style().visuals.widgets.hovered.fg_stroke;
+    let active = ui.style().visuals.widgets.active.fg_stroke;
+    ui.style_mut().visuals.widgets.hovered.fg_stroke = egui::Stroke::NONE;
+    ui.style_mut().visuals.widgets.active.fg_stroke = egui::Stroke::NONE;
+
+    panel.show(ui, |ui| {
+        ui.style_mut().visuals.widgets.hovered.fg_stroke = hovered;
+        ui.style_mut().visuals.widgets.active.fg_stroke = active;
+        add_contents(ui);
+    });
+
+    // The style emptied above is the one this ui hands to the panels drawn
+    // after this one; put it back so the next starts from the real colours.
+    ui.style_mut().visuals.widgets.hovered.fg_stroke = hovered;
+    ui.style_mut().visuals.widgets.active.fg_stroke = active;
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        self.draw(ui);
+    }
+}
+
+impl App {
+    /// One frame of the note window: the cards, the status line, the open
+    /// dialogs and the autosave timer.
+    ///
+    /// Split out of the `eframe::App` impl so a test can draw a frame without
+    /// an `eframe::Frame` to hand it.
+    fn draw(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
 
-        self.sidebar(ui);
-        self.preview(ui);
+        // The window is a backdrop first: one panel that fills it and keeps a
+        // margin, so everything drawn inside — the tree, the two cards, the
+        // status line — stands off the window's edges rather than running to
+        // them.
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::APP_BG)
+                    .inner_margin(egui::Margin::same(PANE_GAP)),
+            )
+            .show(ui, |ui| {
+                // The status line runs the width of the window, under both
+                // cards, so that they end together instead of the preview
+                // running past the editor's foot.
+                let status = self.status.as_str();
+                egui::Panel::bottom("status")
+                    .show_separator_line(false)
+                    .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(6, 2)))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(status).weak().size(12.0));
+                        });
+                    });
 
-        let status = self.status.as_str();
-        egui::Panel::bottom("status").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(status).weak().size(12.0));
+                self.sidebar(ui);
+                self.preview(ui);
+                self.editor(ui);
             });
-        });
 
-        self.editor(ui);
         self.modal_ui(&ctx);
         self.picker_ui(&ctx);
 
@@ -1836,5 +1967,133 @@ mod tests {
             assert!(app.modal.is_none(), "own write mistaken for someone else's");
         }
         assert_eq!(fs::read_to_string(&path).unwrap(), "edit 4");
+    }
+
+    /// The editor and preview card rectangles, read out of a drawn frame,
+    /// left to right. Nothing else about the frame tells a card from a
+    /// full-bleed pane, so the pair of rounded rectangles they are painted from
+    /// is what is asked for.
+    fn card_rects(app: &mut App, ctx: &egui::Context, w: f32, h: f32) -> Vec<egui::Rect> {
+        let output = ctx.run_ui(raw_input(w, h), |ui| app.draw(ui));
+        let mut cards: Vec<egui::Rect> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rect)
+                    if rect.corner_radius == crate::theme::SURFACE_RADIUS
+                        && rect.fill == crate::theme::WINDOW_BG =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+        cards.sort_by(|a, b| a.min.x.total_cmp(&b.min.x));
+        cards
+    }
+
+    /// Two cards, the editor and the preview, standing off the window's edges
+    /// and apart from one another, ending together.
+    #[test]
+    fn the_editor_and_preview_are_cards_inset_from_the_window() {
+        let dir = TempDir::new("layout-cards");
+        let mut app = App::new(dir.0.clone());
+        let ctx = test_ctx();
+
+        let (w, h) = (1200.0, 700.0);
+        let cards = card_rects(&mut app, &ctx, w, h);
+        assert_eq!(
+            cards.len(),
+            2,
+            "the editor and the preview have to be the rounded pages: {cards:?}"
+        );
+        let (editor, preview) = (cards[0], cards[1]);
+
+        let gap = PANE_GAP as f32;
+        assert!(
+            editor.min.x >= gap
+                && preview.min.x >= gap
+                && editor.min.y >= gap
+                && preview.min.y >= gap,
+            "the cards have to stand off the window's left and top: {editor:?} {preview:?}"
+        );
+        assert!(
+            editor.max.x <= w - gap
+                && preview.max.x <= w - gap
+                && editor.max.y <= h - gap
+                && preview.max.y <= h - gap,
+            "and its right and bottom: {editor:?} {preview:?}"
+        );
+        assert!(
+            preview.min.x - editor.max.x >= gap,
+            "the two cards have to be apart: {editor:?} {preview:?}"
+        );
+        assert!(
+            (editor.min.y - preview.min.y).abs() < 1.0
+                && (editor.max.y - preview.max.y).abs() < 1.0,
+            "the two cards have to end together, top and foot: {editor:?} {preview:?}"
+        );
+        assert!(
+            editor.width() > 1.0 && preview.width() > 1.0,
+            "both have to be real cards: {editor:?} {preview:?}"
+        );
+    }
+
+    /// The editor has no width of its own — it is what is left between the tree
+    /// and the preview — so the two that can be dragged are held back from
+    /// taking all of it. The window here is at its narrowest, after a frame at
+    /// a comfortable width has already stored sizes for both, so the floors
+    /// have to hold against the sizes that were dragged rather than against the
+    /// defaults.
+    #[test]
+    fn the_editor_keeps_a_floor_when_the_window_is_narrow() {
+        let dir = TempDir::new("layout-floor");
+        let mut app = App::new(dir.0.clone());
+        let ctx = test_ctx();
+
+        let _ = card_rects(&mut app, &ctx, 1400.0, 800.0);
+        // `main.rs` refuses to open a window narrower than this.
+        let cards = card_rects(&mut app, &ctx, 700.0, 400.0);
+
+        assert_eq!(cards.len(), 2, "{cards:?}");
+        let editor = cards[0];
+        assert!(
+            editor.width() >= EDITOR_MIN - 1.0,
+            "the editor was squeezed to {editor:?}"
+        );
+    }
+
+    /// `resizing_without_line` hides egui's edge rule by emptying the two
+    /// strokes it is drawn from. The panel's own contents — and the panels drawn
+    /// after this one — have to get the real ones back, or a hovered button
+    /// somewhere in the window would quietly draw in nothing.
+    #[test]
+    fn hiding_the_resize_line_leaves_the_colours_alone() {
+        let ctx = test_ctx();
+        ctx.run_ui(raw_input(400.0, 300.0), |ui| {
+            let hovered = ui.style().visuals.widgets.hovered.fg_stroke;
+            let active = ui.style().visuals.widgets.active.fg_stroke;
+
+            resizing_without_line(
+                ui,
+                egui::Panel::left("probe").size_range(60.0..=120.0),
+                |ui| {
+                    assert_eq!(
+                        ui.style().visuals.widgets.hovered.fg_stroke,
+                        hovered,
+                        "the panel's contents must keep the real colours"
+                    );
+                },
+            );
+
+            assert_eq!(
+                ui.style().visuals.widgets.hovered.fg_stroke,
+                hovered,
+                "and so must the ui the next panel is built from"
+            );
+            assert_eq!(ui.style().visuals.widgets.active.fg_stroke, active);
+        })
+        .drop_without_applying_deltas();
     }
 }
