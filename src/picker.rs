@@ -10,12 +10,16 @@
 //!
 //! What is given up with it is a real file manager's conveniences: there is no
 //! typing a path, no bookmarks, no recent places. Walking down from a starting
-//! folder is the whole of it, which is all that picking a notes folder needs.
+//! folder — and making one when the folder wanted is not there yet — is the
+//! whole of it, which is all that picking a notes folder needs.
 
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, Ui};
+
+use crate::vault;
 
 /// How tall the list of folders is allowed to grow before it scrolls.
 const LIST_HEIGHT: f32 = 260.0;
@@ -44,6 +48,17 @@ pub struct Picker {
     /// Why `dir` could not be read, when it could not. Kept rather than shown
     /// as an empty list, which would read as "there is nothing here".
     error: Option<String>,
+    /// The name typed into the row that makes a folder, while that row is up;
+    /// `None` when it is not. Held as the text itself rather than a flag plus a
+    /// string, so there is no state in which a row is up with nothing in it.
+    creating: Option<String>,
+    /// Whether the name box has been handed the keyboard yet. Only the frame it
+    /// appears on needs asking; asking every frame would take focus back off
+    /// anything the user moved to.
+    focused: bool,
+    /// What the last press of Create came to, shown under the box until the
+    /// name is typed at again.
+    create_error: Option<String>,
 }
 
 impl Picker {
@@ -60,15 +75,45 @@ impl Picker {
             dir,
             children: Vec::new(),
             error: None,
+            creating: None,
+            focused: false,
+            create_error: None,
         };
         picker.reread();
         picker
     }
 
     /// Walk into `dir` and read what is inside it.
+    ///
+    /// Anything half-typed into the row that makes a folder is dropped: the
+    /// name belonged to the folder being left behind.
     fn go(&mut self, dir: PathBuf) {
         self.dir = dir;
+        self.creating = None;
+        self.create_error = None;
         self.reread();
+    }
+
+    /// Make a folder called `name` inside the one being browsed and walk into
+    /// it, so that choosing it — the next thing wanted — is one press away.
+    ///
+    /// Why it could not be made comes back as something to put under the name
+    /// box. A folder already at that name is refused rather than reused: it is
+    /// the one the user is looking at, with whatever is in it.
+    fn create_folder(&mut self, name: &str) -> Result<(), String> {
+        let name = name.trim();
+        if !vault::valid_name(name) {
+            return Err("Names cannot be empty, hidden or contain a slash".to_owned());
+        }
+        let path = self.dir.join(name);
+        // `create_dir`, not `create_dir_all`: the latter succeeds on a name
+        // that is already taken, and "already there" has to be said.
+        fs::create_dir(&path).map_err(|err| match err.kind() {
+            io::ErrorKind::AlreadyExists => format!("{name} is already here"),
+            _ => format!("Could not create {name}: {err}"),
+        })?;
+        self.go(path);
+        Ok(())
     }
 
     fn reread(&mut self) {
@@ -123,14 +168,69 @@ impl Picker {
             });
 
         ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if cancellable && ui.button("Cancel").clicked() {
-                outcome = Outcome::Cancelled;
+        // The row that makes a folder stands in place of the buttons rather than
+        // above them: with a name half typed, "Choose this folder" is not what
+        // the next press means.
+        if let Some(mut name) = self.creating.take() {
+            // Taken out of `self` and put back, so the buttons can be drawn and
+            // acted on without holding a borrow of it across them.
+            let mut create = false;
+            let mut cancel = false;
+
+            ui.horizontal(|ui| {
+                ui.label("New folder");
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut name)
+                        .hint_text("Name")
+                        .desired_width(150.0),
+                );
+                if !self.focused {
+                    response.request_focus();
+                    self.focused = true;
+                }
+                if response.changed() {
+                    self.create_error = None;
+                }
+                let entered =
+                    response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if ui.button("Create").clicked() || entered {
+                    create = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+
+            if let Some(error) = &self.create_error {
+                ui.label(egui::RichText::new(error).weak());
             }
-            if ui.button("Choose this folder").clicked() {
-                outcome = Outcome::Chosen(self.dir.clone());
+
+            if create {
+                if let Err(error) = self.create_folder(&name) {
+                    // The name goes back on screen to be fixed, with the box
+                    // focused again, rather than being thrown away with the row.
+                    self.create_error = Some(error);
+                    self.creating = Some(name);
+                    self.focused = false;
+                }
+            } else if !cancel {
+                self.creating = Some(name);
             }
-        });
+        } else {
+            ui.horizontal(|ui| {
+                if ui.button("New folder").clicked() {
+                    self.creating = Some(String::new());
+                    self.create_error = None;
+                    self.focused = false;
+                }
+                if cancellable && ui.button("Cancel").clicked() {
+                    outcome = Outcome::Cancelled;
+                }
+                if ui.button("Choose this folder").clicked() {
+                    outcome = Outcome::Chosen(self.dir.clone());
+                }
+            });
+        }
 
         if let Some(dir) = walk_into {
             self.go(dir);
@@ -236,5 +336,89 @@ mod tests {
     fn falls_back_when_the_starting_folder_is_gone() {
         let picker = Picker::new(Some(Path::new("/nonexistent/vault")));
         assert!(picker.dir.is_dir(), "it has to open somewhere real");
+    }
+
+    /// Making the folder the picked one is the point of the row: it is created
+    /// and it is walked into, so choosing it is the next press and nothing else.
+    #[test]
+    fn makes_a_folder_and_walks_into_it() {
+        let dir = TempDir::new("picker-new");
+        let mut picker = Picker::new(Some(&dir.0));
+
+        assert_eq!(picker.create_folder("  Notes  "), Ok(()));
+
+        assert_eq!(picker.dir, dir.0.join("Notes"), "the name is trimmed");
+        assert!(picker.dir.is_dir(), "and the folder is really there");
+    }
+
+    /// A name that cannot be a folder — one the tree would then hide or refuse
+    /// to make — is turned away without moving.
+    #[test]
+    fn a_name_that_cannot_be_a_folder_is_refused() {
+        let dir = TempDir::new("picker-new-bad");
+        let mut picker = Picker::new(Some(&dir.0));
+
+        for name in ["", "   ", ".hidden", "a/b", ".."] {
+            assert!(picker.create_folder(name).is_err(), "{name:?}");
+        }
+
+        assert_eq!(picker.dir, dir.0, "nothing was walked into");
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 0, "and nothing made");
+    }
+
+    /// A folder already at that name is the one being looked at, with whatever
+    /// is in it, and must not be taken over or walked into.
+    #[test]
+    fn a_folder_that_is_already_there_is_left_alone() {
+        let dir = TempDir::new("picker-new-exists");
+        fs::create_dir(dir.0.join("Notes")).unwrap();
+        fs::write(dir.0.join("Notes").join("keep.md"), "body").unwrap();
+        let mut picker = Picker::new(Some(&dir.0));
+
+        let error = picker.create_folder("Notes").unwrap_err();
+
+        assert!(error.contains("already"), "it has to say so: {error}");
+        assert_eq!(picker.dir, dir.0);
+        assert_eq!(
+            fs::read_to_string(dir.0.join("Notes").join("keep.md")).unwrap(),
+            "body",
+            "what was in it is untouched"
+        );
+    }
+
+    /// Both states of the bottom row lay out without panicking — the plain one
+    /// with its three buttons, and the one that makes a folder, which is drawn
+    /// with a text box egui has to lay out and hand the keyboard to. A panicking
+    /// layout, or an id drawn twice, is what this is here to catch.
+    #[test]
+    fn draws_with_the_name_box_shut_and_open() {
+        let dir = TempDir::new("picker-draw");
+        fs::create_dir(dir.0.join("Notes")).unwrap();
+        let ctx = egui::Context::default();
+        crate::install_fonts(&ctx);
+        crate::theme::apply_style(&ctx);
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(400.0, 600.0),
+            )),
+            ..Default::default()
+        };
+
+        let mut picker = Picker::new(Some(&dir.0));
+        let mut outcomes = Vec::new();
+        ctx.run_ui(input(), |ui| outcomes.push(picker.ui(ui, true)))
+            .drop_without_applying_deltas();
+
+        picker.creating = Some("Notes".to_owned());
+        ctx.run_ui(input(), |ui| outcomes.push(picker.ui(ui, true)))
+            .drop_without_applying_deltas();
+
+        assert!(
+            outcomes
+                .iter()
+                .all(|outcome| matches!(outcome, Outcome::Browsing)),
+            "no button was pressed, so nothing was decided"
+        );
     }
 }
