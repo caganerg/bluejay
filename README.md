@@ -20,7 +20,7 @@ but never opened, and an image is drawn as its link rather than downloaded.
 
 Bluejay is finished. It does what it was written to do — a tree, an editor and a
 preview over a folder of `.md` files — and there is no roadmap behind it, no
-next feature waiting and no plan to ship one. 1.1.0 is where it stops. Expect no
+next feature waiting and no plan to ship one. 1.2.1 is where it stops. Expect no
 updates for a long time.
 
 That is a statement about intent rather than about decay. Nothing here is left
