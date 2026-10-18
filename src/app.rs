@@ -25,6 +25,8 @@ const EDITOR_SIZE: f32 = 14.0;
 /// applied once the panel closure is over.
 enum Cmd {
     Open(PathBuf),
+    Back,
+    Forward,
     Reload,
     ChangeRoot,
     NewNote(PathBuf),
@@ -98,6 +100,12 @@ pub struct App {
     /// Lowercased note name -> path, rebuilt on every refresh.
     index: HashMap<String, PathBuf>,
     open_path: Option<PathBuf>,
+    /// The notes shown before the open one, most recent last, and those a step
+    /// back has left behind to step forward into again. Two stacks rather than
+    /// one list with a cursor, because opening a note by hand — the one thing
+    /// that starts a new trail — is exactly what empties the second.
+    back: Vec<PathBuf>,
+    forward: Vec<PathBuf>,
     buffer: String,
     /// The open note as it last appeared on disk. Comparing the contents rather
     /// than only metadata also catches writers that preserve timestamps.
@@ -129,6 +137,8 @@ impl App {
             tree,
             index,
             open_path: None,
+            back: Vec::new(),
+            forward: Vec::new(),
             buffer: String::new(),
             open_disk: None,
             dirty: false,
@@ -247,6 +257,70 @@ impl App {
         }
     }
 
+    /// Open a note the way a click on it does, remembering the one being left
+    /// so "Back" can return there, and forgetting wherever "Forward" had got to.
+    ///
+    /// `open` refuses to move while the buffer cannot be written, so where the
+    /// window actually landed is what decides whether a step happened — not the
+    /// call returning, which says nothing either way.
+    fn go_to(&mut self, path: PathBuf) {
+        let from = self.open_path.clone();
+        if from.as_deref() == Some(path.as_path()) {
+            return;
+        }
+        self.open(path.clone());
+        if self.open_path.as_deref() != Some(path.as_path()) {
+            return;
+        }
+        if let Some(from) = from {
+            self.back.push(from);
+        }
+        self.forward.clear();
+    }
+
+    /// Step back to the note before this one.
+    fn go_back(&mut self) {
+        // A note that has gone missing since it was visited — deleted on disk,
+        // deleted in here — is dropped rather than offered as a step that can
+        // only ever fail.
+        while self.back.last().is_some_and(|path| !path.is_file()) {
+            self.back.pop();
+        }
+        let Some(previous) = self.back.pop() else {
+            return;
+        };
+        let from = self.open_path.clone();
+        self.open(previous.clone());
+        if self.open_path.as_deref() != Some(previous.as_path()) {
+            // The buffer would not let go, so the step is put back rather than
+            // silently eaten: the button has to be there to press again.
+            self.back.push(previous);
+            return;
+        }
+        if let Some(from) = from {
+            self.forward.push(from);
+        }
+    }
+
+    /// Step forward again, undoing a step back.
+    fn go_forward(&mut self) {
+        while self.forward.last().is_some_and(|path| !path.is_file()) {
+            self.forward.pop();
+        }
+        let Some(next) = self.forward.pop() else {
+            return;
+        };
+        let from = self.open_path.clone();
+        self.open(next.clone());
+        if self.open_path.as_deref() != Some(next.as_path()) {
+            self.forward.push(next);
+            return;
+        }
+        if let Some(from) = from {
+            self.back.push(from);
+        }
+    }
+
     /// Read the open note back from disk, dropping whatever is in the buffer.
     ///
     /// Deliberately not `open`, which saves first: the whole point of getting
@@ -274,7 +348,7 @@ impl App {
             return;
         }
         if let Some(path) = self.index.get(&name.to_lowercase()).cloned() {
-            self.open(path);
+            self.go_to(path);
             return;
         }
         let path = self.root.join(format!("{}.md", name.trim()));
@@ -303,7 +377,7 @@ impl App {
             Ok(_) => match vault::write_atomic(&path, &format!("# {}\n\n", name.trim())) {
                 Ok(()) => {
                     self.refresh();
-                    self.open(path);
+                    self.go_to(path);
                     self.status = format!("Created {name}.md");
                 }
                 Err(err) => self.status = format!("Could not create {name}.md: {err}"),
@@ -311,7 +385,7 @@ impl App {
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                 // It was there all along; take the index's word for nothing.
                 self.refresh();
-                self.open(path);
+                self.go_to(path);
             }
             Err(err) => self.status = format!("Could not create {name}.md: {err}"),
         }
@@ -335,26 +409,31 @@ impl App {
         self.status = format!("Vault: {}", self.root.display());
     }
 
-    /// Follow the open note when `from` becomes `to` — as the note itself, or
-    /// as something inside the folder that moved.
+    /// Follow the open note — and the trail behind and ahead of it — when `from`
+    /// becomes `to`, as the thing that moved or as something inside the folder
+    /// that did.
     ///
     /// Autosave writes to `open_path` on a timer, so a path left pointing at
     /// the old name would either fail or, once the note is renamed back over
-    /// it, write the buffer to a note nobody is looking at.
+    /// it, write the buffer to a note nobody is looking at. The trail is only
+    /// read when a button is pressed, but a stale step there is a note Back and
+    /// Forward would walk into and not find.
     fn follow_move(&mut self, from: &Path, to: &Path) {
-        let Some(open) = self.open_path.clone() else {
-            return;
-        };
-        if open == from {
-            self.open_path = Some(to.to_path_buf());
-        } else if let Ok(rest) = open.strip_prefix(from) {
-            self.open_path = Some(to.join(rest));
+        let open = self.open_path.clone();
+        if let Some(moved) = open.as_deref().and_then(|p| moved_path(p, from, to)) {
+            self.open_path = Some(moved);
         }
+        // The trail is made of paths too, and a note that moved is still one
+        // worth stepping back to.
+        remap(&mut self.back, from, to);
+        remap(&mut self.forward, from, to);
     }
 
     fn apply(&mut self, cmd: Cmd) {
         match cmd {
-            Cmd::Open(path) => self.open(path),
+            Cmd::Open(path) => self.go_to(path),
+            Cmd::Back => self.go_back(),
+            Cmd::Forward => self.go_forward(),
             Cmd::Reload => {
                 self.refresh();
                 // The button says "reload from disk", so the open note is part
@@ -485,7 +564,7 @@ impl App {
                 match File::create_new(&path) {
                     Ok(_) => {
                         self.refresh();
-                        self.open(path);
+                        self.go_to(path);
                     }
                     Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                         self.status = format!("{file} already exists");
@@ -591,6 +670,8 @@ impl App {
         let selected = self.open_path.as_deref();
         let root = self.root.as_path();
         let can_paste = self.clipboard.is_some();
+        let can_go_back = !self.back.is_empty();
+        let can_go_forward = !self.forward.is_empty();
 
         egui::Panel::left("sidebar")
             .resizable(true)
@@ -598,28 +679,49 @@ impl App {
             .size_range(150.0..=420.0)
             .show(ui, |ui| {
                 ui.add_space(6.0);
-                // Names the vault that is open and swaps it. The full path goes
-                // in the tooltip, being far too long for the narrowest sidebar.
-                let vault = ui
-                    .add(egui::Button::new(format!("🗀  {}", tree.name)).truncate())
-                    .on_hover_text(format!(
-                        "{}\n\nClick to open a different folder.",
-                        root.display()
-                    ));
-                if vault.clicked() {
-                    cmds.push(Cmd::ChangeRoot);
-                }
-                // The vault folder has no row of its own in the tree, so its
-                // "Paste" hangs off the header. With an empty clipboard there
-                // is nothing to put in the menu, so none is attached.
-                if can_paste {
-                    vault.context_menu(|ui| {
-                        if ui.button("Paste").clicked() {
-                            cmds.push(Cmd::Paste(root.to_path_buf()));
-                            ui.close();
-                        }
-                    });
-                }
+                ui.horizontal(|ui| {
+                    // Back and forward through the notes this window has shown,
+                    // the way a browser's two arrows work: opening a note by
+                    // hand is what starts a new trail, and only then is there
+                    // nowhere to go forward to.
+                    if ui
+                        .add_enabled(can_go_back, egui::Button::new("⏴"))
+                        .on_hover_text("Back to the note before this one")
+                        .clicked()
+                    {
+                        cmds.push(Cmd::Back);
+                    }
+                    if ui
+                        .add_enabled(can_go_forward, egui::Button::new("⏵"))
+                        .on_hover_text("Forward to the note after this one")
+                        .clicked()
+                    {
+                        cmds.push(Cmd::Forward);
+                    }
+                    // Names the vault that is open and swaps it. The full path
+                    // goes in the tooltip, being far too long for the narrowest
+                    // sidebar.
+                    let vault = ui
+                        .add(egui::Button::new(format!("🗀  {}", tree.name)).truncate())
+                        .on_hover_text(format!(
+                            "{}\n\nClick to open a different folder.",
+                            root.display()
+                        ));
+                    if vault.clicked() {
+                        cmds.push(Cmd::ChangeRoot);
+                    }
+                    // The vault folder has no row of its own in the tree, so its
+                    // "Paste" hangs off the header. With an empty clipboard there
+                    // is nothing to put in the menu, so none is attached.
+                    if can_paste {
+                        vault.context_menu(|ui| {
+                            if ui.button("Paste").clicked() {
+                                cmds.push(Cmd::Paste(root.to_path_buf()));
+                                ui.close();
+                            }
+                        });
+                    }
+                });
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui.button("New note").clicked() {
@@ -941,6 +1043,31 @@ fn name_of(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// Point every path in `paths` at where it moved to — as the thing that moved,
+/// or as something inside the folder that did. A path that had nothing to do
+/// with the move is left alone.
+fn remap(paths: &mut [PathBuf], from: &Path, to: &Path) {
+    for path in paths {
+        if let Some(moved) = moved_path(path, from, to) {
+            *path = moved;
+        }
+    }
+}
+
+/// Where `path` ends up once the thing at `from` is moved to `to`: `to` itself
+/// when they are the same file, or its new place inside the folder that moved.
+/// `None` when the move had nothing to do with it.
+///
+/// An exact match is answered without asking `strip_prefix`, which strips it to
+/// nothing and would join that nothing back on as the trailing slash of a path
+/// no file answers to.
+fn moved_path(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
+    if path == from {
+        return Some(to.to_path_buf());
+    }
+    path.strip_prefix(from).ok().map(|rest| to.join(rest))
+}
+
 /// Height of one note row, worked out the way `selectable_label` works its own
 /// out, so a row that is skipped reserves exactly what drawing it would have
 /// taken. `note_rows_are_the_height_we_reserve` holds the two together.
@@ -1064,6 +1191,134 @@ mod tests {
         app.refresh();
         app.open(path.clone());
         path
+    }
+
+    /// Two notes to walk between, written and scanned into the tree but neither
+    /// of them opened.
+    fn two_notes(app: &mut App, dir: &TempDir) -> (PathBuf, PathBuf) {
+        let a = dir.0.join("a.md");
+        let b = dir.0.join("b.md");
+        fs::write(&a, "a").unwrap();
+        fs::write(&b, "b").unwrap();
+        app.refresh();
+        (a, b)
+    }
+
+    /// The whole point of the two buttons: step back to the note that was open
+    /// before this one, and forward into it again.
+    #[test]
+    fn back_and_forward_walk_the_notes_that_were_open() {
+        let dir = TempDir::new("nav");
+        let mut app = App::new(dir.0.clone());
+        let (a, b) = two_notes(&mut app, &dir);
+        assert!(
+            app.back.is_empty() && app.forward.is_empty(),
+            "nothing has been shown yet, so neither button has anywhere to go"
+        );
+
+        app.apply(Cmd::Open(a.clone()));
+        app.apply(Cmd::Open(b.clone()));
+        assert_eq!(app.open_path.as_deref(), Some(b.as_path()));
+
+        app.apply(Cmd::Back);
+        assert_eq!(app.open_path.as_deref(), Some(a.as_path()));
+        assert_eq!(app.buffer, "a");
+
+        app.apply(Cmd::Forward);
+        assert_eq!(app.open_path.as_deref(), Some(b.as_path()));
+        assert_eq!(app.buffer, "b");
+    }
+
+    /// Clicking a note is the thing that starts a new trail — the same rule a
+    /// browser's arrows follow.
+    #[test]
+    fn opening_a_note_by_hand_clears_the_forward_trail() {
+        let dir = TempDir::new("nav-clear");
+        let mut app = App::new(dir.0.clone());
+        let (a, b) = two_notes(&mut app, &dir);
+        let c = dir.0.join("c.md");
+        fs::write(&c, "c").unwrap();
+        app.refresh();
+
+        app.apply(Cmd::Open(a.clone()));
+        app.apply(Cmd::Open(b.clone()));
+        app.apply(Cmd::Back);
+        assert_eq!(app.open_path.as_deref(), Some(a.as_path()));
+
+        app.apply(Cmd::Open(c.clone()));
+        assert!(app.forward.is_empty(), "b is no longer ahead");
+
+        app.apply(Cmd::Back);
+        assert_eq!(app.open_path.as_deref(), Some(a.as_path()));
+    }
+
+    /// The trail is made of paths, and a rename moves the one it holds as surely
+    /// as it moves the note that is open.
+    #[test]
+    fn a_renamed_note_stays_on_the_trail() {
+        let dir = TempDir::new("nav-rename");
+        let mut app = App::new(dir.0.clone());
+        let (a, b) = two_notes(&mut app, &dir);
+        app.apply(Cmd::Open(a.clone()));
+        app.apply(Cmd::Open(b.clone()));
+
+        let renamed = dir.0.join("renamed.md");
+        fs::rename(&a, &renamed).unwrap();
+        app.follow_move(&a, &renamed);
+        app.refresh();
+
+        app.apply(Cmd::Back);
+        assert_eq!(app.open_path.as_deref(), Some(renamed.as_path()));
+        assert_eq!(app.buffer, "a");
+    }
+
+    /// A step that has since been deleted is stepped over rather than offered
+    /// as a note that can only fail to open.
+    #[test]
+    fn a_note_deleted_from_the_trail_is_stepped_over() {
+        let dir = TempDir::new("nav-gone");
+        let mut app = App::new(dir.0.clone());
+        let (a, b) = two_notes(&mut app, &dir);
+        let c = dir.0.join("c.md");
+        fs::write(&c, "c").unwrap();
+        app.refresh();
+
+        app.apply(Cmd::Open(a.clone()));
+        app.apply(Cmd::Open(b.clone()));
+        app.apply(Cmd::Open(c.clone()));
+
+        fs::remove_file(&b).unwrap();
+
+        app.apply(Cmd::Back);
+        assert_eq!(app.open_path.as_deref(), Some(a.as_path()));
+        assert!(app.back.is_empty(), "the missing step is dropped, not kept");
+    }
+
+    /// `open` refuses to move while the buffer cannot be written, and a step
+    /// that did not happen must not be remembered as one.
+    #[test]
+    fn a_refused_move_is_not_recorded() {
+        let dir = TempDir::new("nav-refused");
+        let mut app = App::new(dir.0.clone());
+        let (a, b) = two_notes(&mut app, &dir);
+
+        app.apply(Cmd::Open(a.clone()));
+        app.buffer = "mine".to_owned();
+        app.dirty = true;
+        fs::write(&a, "theirs").unwrap();
+
+        app.apply(Cmd::Open(b.clone()));
+
+        assert_eq!(
+            app.open_path.as_deref(),
+            Some(a.as_path()),
+            "the move was refused, so the note is still the open one"
+        );
+        assert!(app.back.is_empty(), "and nothing was put on the trail");
+        assert!(matches!(
+            app.modal.as_ref().map(|m| &m.kind),
+            Some(ModalKind::Conflict)
+        ));
     }
 
     #[test]

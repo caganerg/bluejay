@@ -303,6 +303,30 @@ mod tests {
         }
     }
 
+    /// The sidebar's back and forward buttons are drawn with two triangles that
+    /// neither bundled typeface has; they come off the emoji faces sitting on
+    /// the back of the chain. Asserted rather than assumed, because a family
+    /// that lost those faces is exactly what once left the folder and reload
+    /// icons as empty boxes.
+    #[test]
+    fn the_fallback_faces_draw_the_back_and_forward_triangles() {
+        let ctx = egui::Context::default();
+        install_fonts(&ctx);
+
+        let mut missing = Vec::new();
+        ctx.run_ui(Default::default(), |ui| {
+            let font = egui::FontId::proportional(14.0);
+            for triangle in ["⏴", "⏵"] {
+                if !ui.ctx().fonts_mut(|f| f.has_glyphs(&font, triangle)) {
+                    missing.push(triangle);
+                }
+            }
+        })
+        .drop_without_applying_deltas();
+
+        assert!(missing.is_empty(), "no font draws {missing:?}");
+    }
+
     /// The emoji faces egui ships stay on the back of each family: the sidebar
     /// draws its folder and reload icons with glyphs neither of our typefaces
     /// has, and they came out as empty boxes when a family replaced that chain
