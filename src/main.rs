@@ -44,6 +44,11 @@ const BOLD_WEIGHT: f32 = 700.0;
 /// Wayland app id, and the basename the desktop entry must carry.
 const APP_ID: &str = "Bluejay";
 
+/// How wide the first-run column is drawn, when the window is wide enough for
+/// it. Narrow enough to read as a column in the middle of the window rather
+/// than a block spread across it.
+const FIRST_RUN_WIDTH: f32 = 420.0;
+
 fn main() -> ExitCode {
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1280.0, 800.0])
@@ -193,18 +198,7 @@ impl eframe::App for Bluejay {
         match self {
             Bluejay::Setup { picker } => {
                 egui::CentralPanel::default().show(ui, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(28.0);
-                        ui.heading("Bluejay");
-                        ui.add_space(8.0);
-                        ui.label("Pick the folder your .md notes live in.");
-                    });
-                    ui.add_space(20.0);
-                    // Nothing to cancel back to: the window has no other state
-                    // until a vault has been chosen.
-                    if let picker::Outcome::Chosen(path) = picker.ui(ui, false) {
-                        chosen = Some(path);
-                    }
+                    chosen = first_run(ui, picker);
                 });
             }
             Bluejay::Ready(app) => eframe::App::ui(app.as_mut(), ui, frame),
@@ -217,9 +211,110 @@ impl eframe::App for Bluejay {
     }
 }
 
+/// The first-run screen: what it is asking for, and the picker to answer with,
+/// as one column centered in the window rather than stretched from edge to edge.
+///
+/// The picker is the same widget the note window opens in a modal, so centering
+/// it has to happen out here and not inside it — the modal is already centered,
+/// and its own block is meant to fill the dialog.
+///
+/// Returns the folder that was chosen, if one was.
+fn first_run(ui: &mut egui::Ui, picker: &mut picker::Picker) -> Option<PathBuf> {
+    first_run_column(ui, picker).1
+}
+
+/// `first_run`'s column, handing back where it was drawn alongside the folder
+/// chosen. The rect is there for the one test that holds the centering up; the
+/// window itself has no use for it.
+fn first_run_column(
+    ui: &mut egui::Ui,
+    picker: &mut picker::Picker,
+) -> (egui::Rect, Option<PathBuf>) {
+    let mut chosen = None;
+    let column = ui.vertical_centered(|ui| {
+        // Narrowed before anything is drawn, not after: a `Label` widens its
+        // region to the whole width it is given, and a column that was allowed
+        // to go full width once cannot be brought back afterwards.
+        ui.set_max_width(ui.available_width().min(FIRST_RUN_WIDTH));
+        ui.add_space(28.0);
+        ui.heading("Bluejay");
+        ui.add_space(8.0);
+        ui.label("Pick the folder your .md notes live in.");
+        ui.add_space(20.0);
+        // Nothing to cancel back to: the window has no other state until a
+        // vault has been chosen.
+        if let picker::Outcome::Chosen(path) = picker.ui(ui, false) {
+            chosen = Some(path);
+        }
+    });
+    (column.response.rect, chosen)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_ctx() -> egui::Context {
+        let ctx = egui::Context::default();
+        install_fonts(&ctx);
+        crate::theme::apply_style(&ctx);
+        ctx
+    }
+
+    fn raw_input(w: f32, h: f32) -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(w, h),
+            )),
+            ..Default::default()
+        }
+    }
+
+    /// The first-run screen is a column centered in the window, not a block
+    /// stretched from edge to edge. The two lines at the top were centered
+    /// either way; what is asserted here is that the picker under them — the
+    /// path, the folder rows and the buttons — is in the same column, and that
+    /// a window too narrow for that column does not push it off the left edge.
+    #[test]
+    fn the_first_run_column_is_centered() {
+        let ctx = test_ctx();
+        let mut picker = picker::Picker::new(Some(std::path::Path::new("/")));
+        let window = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 700.0));
+        let mut column = egui::Rect::NOTHING;
+
+        ctx.run_ui(raw_input(window.width(), window.height()), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                column = first_run_column(ui, &mut picker).0;
+            });
+        })
+        .drop_without_applying_deltas();
+
+        assert!(column.width() > 0.0, "nothing was drawn");
+        assert!(
+            (column.center().x - window.center().x).abs() < 1.0,
+            "the column is off centre: {column:?} in {window:?}"
+        );
+        assert!(
+            (column.width() - FIRST_RUN_WIDTH).abs() < 1.0,
+            "the column is not its own width: {column:?}"
+        );
+
+        // Narrower than the column wants to be: it takes the width there is,
+        // and still starts at the window's edge rather than past it.
+        let mut narrow = egui::Rect::NOTHING;
+        ctx.run_ui(raw_input(300.0, 400.0), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                narrow = first_run_column(ui, &mut picker).0;
+            });
+        })
+        .drop_without_applying_deltas();
+
+        assert!(
+            narrow.min.x > -0.5 && narrow.width() > 0.0,
+            "a narrow window must not spill: {narrow:?}"
+        );
+    }
 
     /// The bold family is the sans asked to sit at 700, so that axis has to be
     /// there and has to reach that far. Were it not, every bold thing in the
