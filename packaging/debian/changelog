@@ -1,0 +1,22 @@
+bluejay (1.2.1) unstable; urgency=medium
+
+  * First packaged build of Bluejay, a native markdown note app: a file tree,
+    a plain text editor and a live preview side by side, drawn by
+    eframe/egui rather than by a web engine.
+
+  * The window is a backdrop with the editor and the preview on it as rounded
+    cards, standing off every edge and off one another. The tree keeps its
+    place on the backdrop, and the status line runs the width of the window
+    under both cards so that they end together.
+
+  * Nothing is drawn along a pane's edge while it is being dragged, and the
+    tree, the editor and the preview each have a floor they cannot be dragged
+    past.
+
+  * Two arrows at the top of the sidebar walk back and forward through the
+    notes this window has shown.
+
+  * The picker can make the folder it is looking for, and the first-run screen
+    sits in the middle of the window rather than along its left edge.
+
+ -- caganerg <caganergun@tutanota.com>  Sun, 18 Oct 2026 18:10:06 +0300

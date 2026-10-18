@@ -1,0 +1,18 @@
+#!/bin/sh
+# The desktop entry and the icon live in /usr/share, and both carry caches an
+# installed desktop keeps for them. Debian's desktop-file-utils and
+# gtk-update-icon-cache register dpkg triggers that would refresh those caches
+# on their own, but only when they are installed; the two guards below are what
+# covers a machine that has neither.
+set -e
+
+if [ "$1" = "configure" ]; then
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database -q /usr/share/applications || true
+    fi
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+    fi
+fi
+
+exit 0
