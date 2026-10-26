@@ -62,6 +62,24 @@ On first launch Bluejay asks for the folder your notes live in. The choice is
 remembered in `~/.config/Bluejay/vault.txt` (delete that file to pick a
 different folder).
 
+## Ubuntu 26.04 on arm64
+
+`packaging/build-deb.sh` packages for the host's own Debian release and cannot
+cross-compile. `packaging/build-deb-ubuntu-arm64.sh` does the arm64 build from an
+amd64 host: it fetches Ubuntu 26.04's own arm64 `libc6` and `libc6-dev`, points
+clang and LLD at them as a sysroot, loads the result under qemu with no Wayland
+display to prove the loader accepts it, and writes
+`target/deb/bluejay_1.2.1_arm64.deb`.
+
+```sh
+rustup target add aarch64-unknown-linux-gnu
+sudo apt install clang lld
+packaging/build-deb-ubuntu-arm64.sh
+```
+
+The archive and the cache can be moved with `BLUEJAY_DEB_MIRROR`,
+`BLUEJAY_DEB_SUITE` and `BLUEJAY_DEB_CACHE`; see the top of the script.
+
 ## Desktop entry and icon
 
 The logo lives at `assets/logo.png` (512×512) and is baked into the binary as
